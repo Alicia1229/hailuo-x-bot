@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  macOS launchd：每天 19:00 跑一次 main.py。
+  安装方法：
+    1) cp scripts/com.minimax.hailuo-bot.plist ~/Library/LaunchAgents/
+    2) 改下面 /Users/minimax/hailuo-x-bot 为你的实际路径
+    3) launchctl load ~/Library/LaunchAgents/com.minimax.hailuo-bot.plist
+       launchctl start com.minimax.hailuo-bot
+    4) 卸载：launchctl unload ~/Library/LaunchAgents/com.minimax.hailuo-bot.plist
+  注意：电脑必须在那时是开机的（睡眠也会触发但装完后可能错过）。
+  如果机器经常关机，建议改用 GitHub Actions 那份 workflow。
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.minimax.hailuo-bot</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/python3</string>
+        <string>-m</string>
+        <string>src.main</string>
+        <string>--once</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/minimax/hailuo-x-bot</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    </dict>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>19</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/minimax/hailuo-x-bot/logs/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/minimax/hailuo-x-bot/logs/launchd.err.log</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
