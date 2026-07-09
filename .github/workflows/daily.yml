@@ -1,5 +1,4 @@
-  # GitHub Actions：每天 UTC 时间一个固定点跑一次（每天 19:00 Asia/Shanghai = 
-  11:00 UTC）
+  # GitHub Actions：每天 UTC 时间一个固定点跑一次（每天 19:00 Asia/Shanghai = 11:00 UTC）
   # 把这个 repo 推到 GitHub（私有仓库即可）后就会自动生效；电脑关机也不影响。
   # Secrets 里需要配：
   #   FEISHU_WEBHOOK_URL
