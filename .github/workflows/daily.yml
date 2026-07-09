@@ -1,0 +1,39 @@
+  # GitHub Actions：每天 UTC 时间一个固定点跑一次（每天 19:00 Asia/Shanghai = 
+  11:00 UTC）
+  # 把这个 repo 推到 GitHub（私有仓库即可）后就会自动生效；电脑关机也不影响。
+  # Secrets 里需要配：
+  #   FEISHU_WEBHOOK_URL
+  #   FEISHU_SECRET (可选)
+  #   X_AUTH_TOKEN   (auth_token cookie)
+  #   X_CT0          (ct0 cookie)
+  #   X_USERNAME     (你的 X handle，不带 @)
+  name: daily-x-report
+  
+  on:
+    schedule:
+      - cron: "0 11 * * *"   # 19:00 Asia/Shanghai = 11:00 UTC
+    workflow_dispatch:        # 允许手动触发
+  
+  jobs:
+    push:
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v4
+        - uses: actions/setup-python@v5
+          with:
+            python-version: "3.11"
+        - run: pip install -r requirements.txt
+        - name: Register X account
+          run: |
+            python scripts/register_x_account.py \
+              --username "${{ secrets.X_USERNAME }}" \
+              "${{ secrets.X_AUTH_TOKEN }}" \
+              "${{ secrets.X_CT0 }}"
+        - name: Push
+          env:
+            FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+            FEISHU_SECRET:      ${{ secrets.FEISHU_SECRET }}
+            TZ: Asia/Shanghai
+            KEYWORDS: "hailuo03,hailuo3,hailuo,hailuoai,MiniMax Video,MiniMax 
+  H3"
+          run: python -m src.main --once
