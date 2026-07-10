@@ -88,9 +88,12 @@ async def fetch_for_query(
         "搜索 query=%r, 时间窗口=%s ~ %s UTC (server-side since_time=%s until_time=%s)",
         query, cutoff.isoformat(), now.isoformat(), since_ts, until_ts,
     )
-    # X 限流/网络抖动很常见：3 次重试，指数退避（15s/30s/45s）
-    # twscrape 内部已经有账号池轮换，外层这个 retry 是兜底
+    # X 限流/网络抖动很常见：3 次重试，长退避（30s/2min/5min）
+    # 短退避（15/30/45s）对网络抖动够用，对 X 单账号限流（通常 15 分钟级）
+    # 完全没用。这里给的是更长的退避，给账号池恢复时间。
+    # 报错信息通常含 "No account available" / "Rate limit" 字样。
     attempts = 3
+    backoff = [30, 120, 300]
     last_err: Exception | None = None
     for try_n in range(attempts):
         out: list[Tweet] = []
@@ -105,15 +108,26 @@ async def fetch_for_query(
             return out
         except Exception as exc:
             last_err = exc
-            wait = 15 * (try_n + 1)
-            log.warning(
-                "第 %d/%d 次抓取 %r 失败 (%s: %s)，%ds 后重试",
-                try_n + 1, attempts, query[:60], type(exc).__name__, exc, wait,
+            err_name = type(exc).__name__
+            msg = str(exc).lower()
+            is_rate_limit = any(
+                kw in msg
+                for kw in ("rate limit", "too many requests", "no account available", "429")
             )
+            tag = "(疑似限流)" if is_rate_limit else ""
             if try_n < attempts - 1:
+                wait = backoff[try_n]
+                log.warning(
+                    "第 %d/%d 次抓取 %r 失败 %s %s: %s，%ds 后重试",
+                    try_n + 1, attempts, query[:60], tag, err_name, exc, wait,
+                )
                 await asyncio.sleep(wait)
-    log.error("query=%r %d 次重试后仍失败: %s", query[:60], attempts, last_err)
-    raise last_err
+            else:
+                log.error(
+                    "第 %d/%d 次抓取 %r 失败 %s %s: %s，不再重试",
+                    try_n + 1, attempts, query[:60], tag, err_name, exc,
+                )
+    raise last_err  # type: ignore[misc]  # last_err 在循环里必然赋值
 
 
 async def fetch_replies_for(
