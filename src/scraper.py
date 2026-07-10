@@ -72,18 +72,48 @@ async def fetch_for_query(
     max: int = 200,
     db_path: str | Path = "accounts.db",
 ) -> list[Tweet]:
-    """给定任意 X 搜索 query，过去 since_hours 小时内的所有推文。"""
+    """给定任意 X 搜索 query，过去 since_hours 小时内的所有推文。
+
+    时间窗口同时通过 X 服务端的 since_time / until_time 算子过滤，
+    保证返回的 max 条一定都在窗口内（Python 端再过一道兜底）。
+    """
     api = twscrape.API(db_path)
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=since_hours)
-    log.info("搜索 query=%r, 时间窗口=%s UTC", query, cutoff.isoformat())
-    out: list[Tweet] = []
-    async for t in api.search(query, limit=max):
-        if t.date < cutoff:
-            continue
-        out.append(_parse_tweet(t))
-    out.sort(key=lambda x: x.views, reverse=True)
-    log.info("query=%r 命中 %d 条", query[:60], len(out))
-    return out
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=since_hours)
+    since_ts = int(cutoff.timestamp())
+    until_ts = int(now.timestamp())
+    # 用括号把调用方的 query 包起来，避免 since_time/until_time 只 OR 进最后一个关键词
+    bounded = f"({query}) since_time:{since_ts} until_time:{until_ts}"
+    log.info(
+        "搜索 query=%r, 时间窗口=%s ~ %s UTC (server-side since_time=%s until_time=%s)",
+        query, cutoff.isoformat(), now.isoformat(), since_ts, until_ts,
+    )
+    # X 限流/网络抖动很常见：3 次重试，指数退避（15s/30s/45s）
+    # twscrape 内部已经有账号池轮换，外层这个 retry 是兜底
+    attempts = 3
+    last_err: Exception | None = None
+    for try_n in range(attempts):
+        out: list[Tweet] = []
+        try:
+            async for t in api.search(bounded, limit=max):
+                # X 偶尔会回退一两分钟窗口外的，python 再兜底
+                if t.date < cutoff:
+                    continue
+                out.append(_parse_tweet(t))
+            out.sort(key=lambda x: x.views, reverse=True)
+            log.info("query=%r 命中 %d 条", query[:60], len(out))
+            return out
+        except Exception as exc:
+            last_err = exc
+            wait = 15 * (try_n + 1)
+            log.warning(
+                "第 %d/%d 次抓取 %r 失败 (%s: %s)，%ds 后重试",
+                try_n + 1, attempts, query[:60], type(exc).__name__, exc, wait,
+            )
+            if try_n < attempts - 1:
+                await asyncio.sleep(wait)
+    log.error("query=%r %d 次重试后仍失败: %s", query[:60], attempts, last_err)
+    raise last_err
 
 
 async def fetch_replies_for(
