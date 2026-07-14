@@ -19,7 +19,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from dotenv import load_dotenv
 
 from . import analyzer, feishu
-from .scraper import fetch_for_query_sync, fetch_replies_sync
+from .scraper import fetch_for_query_sync
 
 load_dotenv()
 
@@ -67,8 +67,6 @@ def _config() -> dict:
         "lookback_hours": int(os.environ.get("LOOKBACK_HOURS", 24)),
         "max_hailuo_tweets": int(os.environ.get("MAX_HAILUO_TWEETS", -1)),
         "max_per_query": int(os.environ.get("MAX_PER_QUERY", -1)),
-        "reply_limit_per_top": int(os.environ.get("REPLY_LIMIT_PER_TOP", 10)),
-        "top_n_for_cooccur": int(os.environ.get("TOP_N_FOR_COOCUR", 5)),
         "pages_base_url": os.environ.get(
             "PAGES_BASE_URL",
             "https://Alicia1229.github.io/hailuo-x-bot",
@@ -140,8 +138,9 @@ def _build_card(report: dict, include_full_report_link: bool = True) -> dict:
         log.warning("卡片过大 (%dKB)，压缩示例", size_kb)
         for tweet in report_copy.get("top_tweets", []):
             tweet["text"] = tweet.get("text", "")[:120]
-        for cluster in report_copy.get("topic_clusters", []):
-            cluster["examples"] = cluster.get("examples", [])[:1]
+        for item in report_copy.get("public_opinion", []):
+            tweet = item.get("tweet", {})
+            tweet["text"] = tweet.get("text", "")[:120]
         card = feishu.build_card(
             report_copy,
             lookback_hours=meta.get("lookback_hours", 24),
@@ -233,28 +232,7 @@ def run_once(
                     f"竞品 {name} 抓取失败（{type(exc).__name__}）",
                 )
 
-        replies_by_id: dict = {}
-        top_for_replies = hailuo_tweets[:cfg["top_n_for_cooccur"]]
-        log.info(
-            "step3: 拉 top %d 推文的前 %d 评论",
-            cfg["top_n_for_cooccur"], cfg["reply_limit_per_top"],
-        )
-        for tweet in top_for_replies:
-            try:
-                replies = fetch_replies_sync(
-                    tweet_id=int(tweet.tweet_id),
-                    limit=cfg["reply_limit_per_top"],
-                    db_path=cfg["accounts_db"],
-                )
-                if replies:
-                    replies_by_id[int(tweet.tweet_id)] = replies
-            except Exception as exc:
-                _add_quality_warning(
-                    data_quality,
-                    f"推文 {tweet.tweet_id} 的评论抓取失败（{type(exc).__name__}）",
-                )
-
-        log.info("step4: 分析聚合")
+        log.info("step3: 分析聚合")
         full_report_url = _full_report_url(cfg["pages_base_url"], window_end)
         generated_at = datetime.now(ZoneInfo(cfg["tz"]))
         report_id = f"report_{window_end:%Y%m%d}_{generated_at:%Y%m%dT%H%M%S}"
@@ -273,17 +251,20 @@ def run_once(
             "top_tweets": [tweet.to_dict() for tweet in hailuo_tweets[:5]],
             "all_tweets": [tweet.to_dict() for tweet in hailuo_tweets],
             "competitor_table": analyzer.build_competitor_table(competitor_results),
-            "cooccurrence": analyzer.compute_cooccurrence(hailuo_tweets, replies_by_id),
-            "topic_clusters": analyzer.compute_topic_clusters(hailuo_tweets),
+            "related_terms": analyzer.compute_related_terms(
+                hailuo_tweets,
+                excluded_terms=cfg["keywords"],
+            ),
+            "public_opinion": analyzer.compute_public_opinion(hailuo_tweets),
             "risky_tweets": analyzer.compute_risks(hailuo_tweets),
         }
 
         report_file = _write_report(report)
-        log.info("step5: 渲染完整报告 HTML")
+        log.info("step4: 渲染完整报告 HTML")
         _render_report(report_file)
 
         if send_report:
-            log.info("step6: 发飞书")
+            log.info("step5: 发飞书")
             # 本地/launchd 运行只生成 HTML，并不会自动发布到 GitHub Pages。
             _send_report(cfg, report, include_full_report_link=False)
 

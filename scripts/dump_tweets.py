@@ -13,6 +13,7 @@ os.chdir(ROOT)
 from dotenv import load_dotenv
 load_dotenv(ROOT / ".env")
 
+from src import analyzer
 from src.scraper import fetch_for_query_sync
 
 KEYWORDS = [k.strip() for k in os.environ["KEYWORDS"].split(",") if k.strip()]
@@ -50,8 +51,8 @@ full_dump = {
     "top_tweets": [t.to_dict() for t in tweets[:5]],
     "all_tweets": [t.to_dict() for t in tweets],
     "competitor_table": [],
-    "cooccurrence": [],
-    "topic_clusters": [],
+    "related_terms": analyzer.compute_related_terms(tweets, excluded_terms=KEYWORDS),
+    "public_opinion": analyzer.compute_public_opinion(tweets),
     "risky_tweets": [],
 }
 from datetime import datetime as _dt

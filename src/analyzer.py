@@ -96,6 +96,20 @@ NEGATIVE = {
 }
 NEGATION = {"not", "no", "never", "没有", "不是", "不会", "别", "没", "无"}
 
+RELATED_STOPWORDS = {
+    "about", "after", "again", "also", "and", "are", "been", "before",
+    "being", "but", "can", "could", "for", "from", "get", "got", "had",
+    "has", "have", "her", "here", "him", "his", "how", "into", "its",
+    "just", "more", "most", "new", "not", "now", "our", "out", "over",
+    "she", "some", "than", "that", "the", "their", "them", "then", "there",
+    "these", "they", "this", "through", "too", "use", "used", "using",
+    "very", "was", "way", "were", "what", "when", "where", "which", "who",
+    "will", "with", "would", "you", "your", "ai", "video", "image", "prompt",
+    "generated", "generate", "created", "create", "made", "official", "https",
+    "com", "amp", "一个", "这个", "可以", "使用", "进行", "通过", "以及",
+    "就是", "还是", "没有", "什么", "非常", "真的", "今天", "现在",
+}
+
 
 def sentiment_score(text: str) -> float:
     """简单的情感打分。返回 [-3, +3] 的浮点数，越正越正面。"""
@@ -125,10 +139,9 @@ class Report:
     summary: dict
     top_tweets: list[Tweet]
     competitor_table: list[dict]
-    cooccurrence: list[dict]
-    topic_clusters: list[dict]
+    related_terms: list[dict]
+    public_opinion: list[dict]
     risky_tweets: list[dict]
-    total_replies_fetched: int = 0
     raw: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -147,6 +160,88 @@ def compute_summary(tweets: list[Tweet], window_hours: int = 24) -> dict:
         "authors": len({t.author for t in tweets}),
         "window_hours": window_hours,
     }
+
+
+def compute_related_terms(
+    tweets: list[Tweet],
+    excluded_terms: Iterable[str] = (),
+    limit: int = 20,
+) -> list[dict]:
+    """提取 Related 高频词；count 表示出现该词的推文数，而非原始重复次数。"""
+    excluded = set(RELATED_STOPWORDS)
+    for term in excluded_terms:
+        normalized = term.lower().strip().lstrip("#")
+        if normalized:
+            excluded.add(normalized)
+            excluded.update(normalized.split())
+
+    counter: Counter = Counter()
+    display: dict[str, str] = {}
+    token_pattern = re.compile(
+        r"#[a-zA-Z0-9_\u4e00-\u9fff]+|[a-zA-Z][a-zA-Z0-9_-]{2,}|[\u4e00-\u9fff]{2,6}"
+    )
+    for tweet in tweets:
+        text = re.sub(r"https?://\S+", " ", tweet.text or "")
+        text = re.sub(r"@[A-Za-z0-9_]+", " ", text)
+        seen: set[str] = set()
+        for raw_token in token_pattern.findall(text):
+            normalized = raw_token.lower().lstrip("#")
+            if normalized in excluded or normalized.isdigit():
+                continue
+            if len(normalized) < 2 or normalized in seen:
+                continue
+            seen.add(normalized)
+            display.setdefault(normalized, raw_token)
+        counter.update(seen)
+
+    return [
+        {"term": display[term], "count": count}
+        for term, count in counter.most_common(limit)
+    ]
+
+
+def compute_public_opinion(tweets: list[Tweet], limit: int = 3) -> list[dict]:
+    """选出影响力最高的舆情代表帖，优先覆盖不同作者。"""
+    ranked = sorted(
+        tweets,
+        key=lambda tweet: (tweet.engagement(), tweet.views),
+        reverse=True,
+    )
+    selected: list[Tweet] = []
+    selected_ids: set[str] = set()
+    authors: set[str] = set()
+
+    for tweet in ranked:
+        if tweet.author in authors:
+            continue
+        selected.append(tweet)
+        selected_ids.add(tweet.tweet_id)
+        authors.add(tweet.author)
+        if len(selected) >= limit:
+            break
+    if len(selected) < limit:
+        for tweet in ranked:
+            if tweet.tweet_id in selected_ids:
+                continue
+            selected.append(tweet)
+            if len(selected) >= limit:
+                break
+
+    items = []
+    for tweet in selected:
+        score = sentiment_score(tweet.text)
+        if score >= 0.5:
+            sentiment = "正面"
+        elif score <= -0.5:
+            sentiment = "负面"
+        else:
+            sentiment = "中性"
+        items.append({
+            "tweet": tweet.to_dict(),
+            "sentiment": sentiment,
+            "score": round(score, 2),
+        })
+    return items
 
 
 def build_competitor_table(

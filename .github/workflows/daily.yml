@@ -31,8 +31,6 @@ jobs:
       LOOKBACK_HOURS: "24"
       MAX_HAILUO_TWEETS: "-1"
       MAX_PER_QUERY: "-1"
-      REPLY_LIMIT_PER_TOP: "10"
-      TOP_N_FOR_COOCUR: "5"
       PAGES_BASE_URL: "https://Alicia1229.github.io/hailuo-x-bot"
     steps:
       - uses: actions/checkout@v4

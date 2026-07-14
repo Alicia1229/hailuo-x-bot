@@ -111,11 +111,12 @@ crontab -e
 - `main.py` 提供两种模式：常驻调度 (`python -m src.main`) 和跑一次就退出 (`--once`)，后者是为了方便挂到 launchd / cron / GitHub Actions
 - 所有查询共用固定的每天 19:00 截止窗口；Hailuo 主查询默认不设条数上限，并按 tweet ID 去重
 - Hailuo 和竞品查询默认均不设置条数上限，尽可能抓取固定时间窗口内的完整数据；高频词可能导致任务运行较久或触发 X 限流
+- 飞书卡片展示 Views Top 5、竞品横向数据、Related 高频词云、舆情 Top 3 和风险监控；不再抓评论做竞品共现，也不再展示话题聚类
 
 ## 常见问题
 
 **Q: 飞书推送的 20KB 限制**  
-A: 单次最多展示 15 条，剩下的会被裁剪说"还有 N 条未展示"。如果想突破，可拆成两条卡片发。
+A: 卡片只展示 Views Top 5 和三个舆情代表帖，完整推文通过卡片底部的 GitHub Pages 链接查看。
 
 **Q: 我想换关键词**  
 A: 改 `.env` 里 `KEYWORDS=hailuo,hailuoai,MiniMax`，逗号分隔。

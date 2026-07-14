@@ -4,8 +4,8 @@
   1) 摘要（条数 / 总 views / 总 engagement）
   2) views 前 5 推文
   3) 竞品横向对比表
-  4) hailuo vs 竞品共现分析
-  5) 话题聚类
+  4) Related 高频词云
+  5) 舆情 Top 3
   6) 风险监控
 
 注意：飞书 schema 2.0 已不再支持 `tag: action` 按钮，这里所有跳转都用
@@ -139,37 +139,54 @@ def render_competitor_table(rows: list[dict], lookback_hours: int = 24) -> list[
     }, {"tag": "hr"}]
 
 
-def render_cooccurrence(rows: list[dict]) -> list[dict]:
-    if not rows:
-        return [{"tag": "div", "text": {"tag": "lark_md", "content": "_本期没有提到竞品的 hailuo 推文_"}}]
-    lines = ["**🤝 用户最常将 hailuo 与这些产品对比**"]
-    for r in rows[:6]:
-        lines.append(
-            f"- **{r['competitor']}**：{r['cooccur_count']} 条 "
-            f"({r['cooccur_pct']}% 的 hailuo 推文里出现)，涉及 engagement {_fmt(r['engagement_with_cooccur'])}"
-        )
-    if len(rows) > 6:
-        lines.append(f"\n_共 {len(rows)} 个竞品被对比。_")
+def render_related_terms(terms: list[dict]) -> list[dict]:
+    if not terms:
+        return [{
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": "**☁️ Related 词云**\n_暂无足够词频数据_"},
+        }, {"tag": "hr"}]
+    tokens = []
+    for index, item in enumerate(terms[:20]):
+        text = f"{_safe_md_text(item['term'])} ×{item['count']}"
+        tokens.append(f"**{text}**" if index < 6 else text)
     return [{
         "tag": "div",
-        "text": {"tag": "lark_md", "content": "\n".join(lines)},
+        "text": {
+            "tag": "lark_md",
+            "content": "**☁️ Related 词云**\n" + "　·　".join(tokens),
+        },
     }, {"tag": "hr"}]
 
 
-def render_topic_clusters(clusters: list[dict]) -> list[dict]:
-    if not clusters:
-        return [{"tag": "div", "text": {"tag": "lark_md", "content": "_话题未聚类_"}}]
-    elements = [{"tag": "div", "text": {"tag": "lark_md", "content": "**🎯 话题聚类**"}}]
-    for c in clusters:
-        header = f"**{c['name']}** — {c['count']} 条（{c['pct']}%）"
-        exs = []
-        for t in c.get("examples", [])[:2]:
-            exs.append(
-                f"   • [{t['author']}]({t['author_url']}) 👁{_fmt(t['views'])} — "
-                f"{_truncate(_safe_md_text(t['text']), 70)} ([原推]({t['url']}))"
-            )
-        body = header + ("\n" + "\n".join(exs) if exs else "")
-        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": body}})
+def render_public_opinion(items: list[dict]) -> list[dict]:
+    if not items:
+        return [{
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": "**📣 舆情 Top 3**\n_暂无舆情数据_"},
+        }, {"tag": "hr"}]
+    sentiment_icons = {"正面": "🟢", "中性": "⚪", "负面": "🔴"}
+    elements = [{
+        "tag": "div",
+        "text": {"tag": "lark_md", "content": "**📣 舆情 Top 3**"},
+    }]
+    for index, item in enumerate(items[:3], 1):
+        tweet = item["tweet"]
+        sentiment = item.get("sentiment", "中性")
+        engagement = sum(
+            tweet.get(key, 0)
+            for key in ("likes", "retweets", "replies", "quotes")
+        )
+        content = (
+            f"**{index}. {sentiment_icons.get(sentiment, '⚪')} {sentiment} · "
+            f"[{tweet['author']}]({tweet['author_url']})**\n"
+            f"👁 {_fmt(tweet.get('views', 0))} · 互动 {_fmt(engagement)}\n"
+            f"{_truncate(_safe_md_text(tweet.get('text', '')), 180)}\n"
+            f"🔗 [打开推文]({tweet['url']})"
+        )
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": content},
+        })
     elements.append({"tag": "hr"})
     return elements
 
@@ -241,8 +258,8 @@ def build_card(
         report.get("competitor_table", []),
         lookback_hours=lookback_hours,
     ))
-    body_elements.extend(render_cooccurrence(report.get("cooccurrence", [])))
-    body_elements.extend(render_topic_clusters(report.get("topic_clusters", [])))
+    body_elements.extend(render_related_terms(report.get("related_terms", [])))
+    body_elements.extend(render_public_opinion(report.get("public_opinion", [])))
     body_elements.extend(render_risks(report.get("risky_tweets", [])))
 
     # 完整报告链接(部署在 GitHub Pages)
@@ -306,9 +323,8 @@ if __name__ == "__main__":
              "views": 50000, "likes": 1000, "retweets": 30, "replies": 50, "quotes": 5}
         ],
         "competitor_table": [{"name": "Kling", "count": 12, "views": 80000, "engagement": 1500}],
-        "cooccurrence": [{"competitor": "Kling", "cooccur_count": 5, "cooccur_pct": 12, "engagement_with_cooccur": 800}],
-        "topic_clusters": [{"name": "对比评测", "count": 10, "pct": 23,
-                            "examples": [{"tweet_id":"e1","url":"https://x.com/x/status/9","author":"@x","author_url":"https://x.com/x","text":"对比 hailuo 和 kling","created_at":"2026-07-07T00:00:00+00:00","views":5000,"likes":100,"retweets":10,"replies":3,"quotes":0}]}],
+        "related_terms": [{"term": "cinematic", "count": 12}, {"term": "Kling", "count": 8}],
+        "public_opinion": [{"tweet": {"tweet_id":"e1","url":"https://x.com/x/status/9","author":"@x","author_url":"https://x.com/x","text":"hailuo quality is amazing","created_at":"2026-07-07T00:00:00+00:00","views":5000,"likes":100,"retweets":10,"replies":3,"quotes":0}, "sentiment": "正面", "score": 2.0}],
         "risky_tweets": [],
     }
     print(json.dumps(build_card(fake_report), ensure_ascii=False, indent=2)[:1200])
