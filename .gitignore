@@ -4,3 +4,4 @@ __pycache__/
 accounts.db
 cache/*.json
 logs/*.log
+.DS_Store
