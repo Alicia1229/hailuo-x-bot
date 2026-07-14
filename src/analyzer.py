@@ -137,7 +137,7 @@ class Report:
         return d
 
 
-def compute_summary(tweets: list[Tweet]) -> dict:
+def compute_summary(tweets: list[Tweet], window_hours: int = 24) -> dict:
     total_views = sum(t.views for t in tweets)
     total_eng = sum(t.engagement() for t in tweets)
     return {
@@ -145,7 +145,7 @@ def compute_summary(tweets: list[Tweet]) -> dict:
         "total_views": total_views,
         "total_engagement": total_eng,
         "authors": len({t.author for t in tweets}),
-        "window_hours": 24,
+        "window_hours": window_hours,
     }
 
 

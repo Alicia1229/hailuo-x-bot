@@ -1,25 +1,17 @@
-"""主入口：两种模式
-
-1) python -m src.main --once    抓一次就退出（建议配合 macOS launchd / cron）
-2) python -m src.main           APScheduler 常驻，每天 PUSH_HOUR:PUSH_MINUTE 触发
-
-完整流程：
-  1. hailuo 关键词主搜索
-  2. 每个竞品关键词并行搜索（同期 24h）
-  3. 对 hailuo Top-N 推文拉评论（共现分析用）
-  4. analyzer 聚合：摘要 + 竞品表 + 共现 + 话题 + 风险
-  5. 发到飞书
-"""
+"""Hailuo X 日报入口。"""
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import logging
 import os
+import subprocess
 import sys
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -31,36 +23,56 @@ from .scraper import fetch_for_query_sync, fetch_replies_sync
 
 load_dotenv()
 
-LOG_DIR = Path("logs")
-LOG_DIR.mkdir(exist_ok=True)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_DIR / "bot.log", encoding="utf-8"),
-        logging.StreamHandler(sys.stdout),
-    ],
-)
 log = logging.getLogger("main")
+
+
+def _configure_logging() -> None:
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        handlers=[
+            RotatingFileHandler(
+                log_dir / "bot.log",
+                maxBytes=5 * 1024 * 1024,
+                backupCount=3,
+                encoding="utf-8",
+            ),
+            logging.StreamHandler(sys.stdout),
+        ],
+    )
+    # httpx 的 INFO 日志包含完整请求 URL；飞书 webhook 本身就是凭证。
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def _config() -> dict:
     return {
-        "feishu_webhook": os.environ["FEISHU_WEBHOOK_URL"],
+        "feishu_webhook": os.environ.get("FEISHU_WEBHOOK_URL"),
         "feishu_secret": os.environ.get("FEISHU_SECRET") or None,
-        "keywords": [k.strip() for k in os.environ["KEYWORDS"].split(",") if k.strip()],
+        "keywords": [
+            keyword.strip()
+            for keyword in os.environ.get("KEYWORDS", "").split(",")
+            if keyword.strip()
+        ],
         "competitors": [k.strip() for k in os.environ.get(
             "COMPETITOR_KEYWORDS",
-            "Seedance,Dreamina,Kling,Vidu,Pika,Runway,Happy Horse,Higgsfield"
+            "Seedance,Dreamina,Kling,Vidu,Pika,Runway,Happy Horse,Higgsfield",
         ).split(",") if k.strip()],
         "tz": os.environ.get("TZ", "Asia/Shanghai"),
         "push_hour": int(os.environ.get("PUSH_HOUR", 19)),
         "push_minute": int(os.environ.get("PUSH_MINUTE", 0)),
         "accounts_db": os.environ.get("X_ACCOUNTS_DB", "accounts.db"),
         "lookback_hours": int(os.environ.get("LOOKBACK_HOURS", 24)),
-        "max_per_query": int(os.environ.get("MAX_PER_QUERY", 150)),
+        "max_hailuo_tweets": int(os.environ.get("MAX_HAILUO_TWEETS", -1)),
+        "max_per_query": int(os.environ.get("MAX_PER_QUERY", -1)),
         "reply_limit_per_top": int(os.environ.get("REPLY_LIMIT_PER_TOP", 10)),
         "top_n_for_cooccur": int(os.environ.get("TOP_N_FOR_COOCUR", 5)),
+        "pages_base_url": os.environ.get(
+            "PAGES_BASE_URL",
+            "https://Alicia1229.github.io/hailuo-x-bot",
+        ),
     }
 
 
@@ -68,120 +80,239 @@ def _q(name: str) -> str:
     return f'"{name}"' if " " in name else name
 
 
-def run_once(cfg: dict) -> None:
-    log.info("==== 单次任务开始 ====")
-    t0 = time.time()
+def _full_report_url(pages_base: str, report_time: datetime) -> str:
+    return f"{pages_base.rstrip('/')}/reports/{report_time:%Y%m%d}.html"
+
+
+def _scheduled_window_end(cfg: dict, now: datetime | None = None) -> datetime:
+    tz = ZoneInfo(cfg["tz"])
+    current = now.astimezone(tz) if now else datetime.now(tz)
+    candidate = current.replace(
+        hour=cfg["push_hour"],
+        minute=cfg["push_minute"],
+        second=0,
+        microsecond=0,
+    )
+    if current < candidate:
+        candidate -= timedelta(days=1)
+    return candidate
+
+
+def _add_quality_warning(data_quality: dict, message: str) -> None:
+    data_quality["complete"] = False
+    data_quality["warnings"].append(message)
+    log.warning("数据质量: %s", message)
+
+
+def _write_report(report: dict) -> Path:
+    cache_dir = Path("cache")
+    cache_dir.mkdir(exist_ok=True)
+    report_file = cache_dir / f"{report['meta']['report_id']}.json"
+    report_file.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (cache_dir / "latest_report_path.txt").write_text(
+        str(report_file),
+        encoding="utf-8",
+    )
+    return report_file
+
+
+def _render_report(report_file: Path) -> None:
+    subprocess.run(
+        [sys.executable, "scripts/render_full_report.py", str(report_file)],
+        check=True,
+        cwd=Path.cwd(),
+    )
+
+
+def _build_card(report: dict, include_full_report_link: bool = True) -> dict:
+    report_copy = copy.deepcopy(report)
+    meta = report_copy.get("meta", {})
+    card = feishu.build_card(
+        report_copy,
+        lookback_hours=meta.get("lookback_hours", 24),
+        full_report_url=(meta.get("full_report_url") if include_full_report_link else None),
+    )
+    size_kb = len(json.dumps(card, ensure_ascii=False)) // 1024
+    if size_kb > 18:
+        log.warning("卡片过大 (%dKB)，压缩示例", size_kb)
+        for tweet in report_copy.get("top_tweets", []):
+            tweet["text"] = tweet.get("text", "")[:120]
+        for cluster in report_copy.get("topic_clusters", []):
+            cluster["examples"] = cluster.get("examples", [])[:1]
+        card = feishu.build_card(
+            report_copy,
+            lookback_hours=meta.get("lookback_hours", 24),
+            full_report_url=(meta.get("full_report_url") if include_full_report_link else None),
+        )
+    return card
+
+
+def _send_report(
+    cfg: dict,
+    report: dict,
+    include_full_report_link: bool = True,
+) -> None:
+    if not cfg["feishu_webhook"]:
+        raise ValueError("FEISHU_WEBHOOK_URL 未配置")
+    feishu.send(
+        cfg["feishu_webhook"],
+        _build_card(report, include_full_report_link=include_full_report_link),
+        secret=cfg["feishu_secret"],
+    )
+
+
+def _notify_failure(cfg: dict, error: BaseException) -> None:
+    if not cfg["feishu_webhook"]:
+        log.warning("未配置 FEISHU_WEBHOOK_URL，跳过失败通知")
+        return
     try:
-        hailuo_query = " OR ".join(_q(k) for k in cfg["keywords"])
+        message = f"{type(error).__name__}: {error}"
+        feishu.send(
+            cfg["feishu_webhook"],
+            feishu.build_error_card(message),
+            secret=cfg["feishu_secret"],
+        )
+    except Exception:
+        log.error("失败通知也没发出去: %s", traceback.format_exc())
+
+
+def run_once(
+    cfg: dict,
+    send_report: bool = True,
+    notify_failure: bool = True,
+) -> Path:
+    log.info("==== 单次任务开始 ====")
+    started_at = time.time()
+    try:
+        window_end = _scheduled_window_end(cfg)
+        window_start = window_end - timedelta(hours=cfg["lookback_hours"])
+        data_quality = {"complete": True, "warnings": []}
+        log.info("固定数据窗口: %s ~ %s", window_start.isoformat(), window_end.isoformat())
+
+        hailuo_query = " OR ".join(_q(keyword) for keyword in cfg["keywords"])
         log.info("step1: 抓 hailuo 关键词")
         hailuo_tweets = fetch_for_query_sync(
             query=hailuo_query,
             since_hours=cfg["lookback_hours"],
-            max=cfg["max_per_query"],
+            max=cfg["max_hailuo_tweets"],
             db_path=cfg["accounts_db"],
+            window_end=window_end,
         )
-        kw_lower = [k.lower() for k in cfg["keywords"]]
-        hailuo_tweets = [t for t in hailuo_tweets
-                         if any(k in t.text.lower() for k in kw_lower)]
+        keywords_lower = [keyword.lower() for keyword in cfg["keywords"]]
+        hailuo_tweets = [
+            tweet for tweet in hailuo_tweets
+            if any(keyword in tweet.text.lower() for keyword in keywords_lower)
+        ]
+        if not hailuo_tweets:
+            _add_quality_warning(data_quality, "Hailuo 主查询返回 0 条，请复核 X 登录态和搜索可用性")
 
-        log.info("step2: 抓竞品（同期 %dh）— %s", cfg["lookback_hours"], cfg["competitors"])
+        log.info("step2: 抓竞品（统一窗口 %dh）— %s", cfg["lookback_hours"], cfg["competitors"])
         competitor_results: dict = {}
         for name in cfg["competitors"]:
             try:
-                competitor_results[name] = fetch_for_query_sync(
+                tweets = fetch_for_query_sync(
                     query=_q(name),
                     since_hours=cfg["lookback_hours"],
                     max=cfg["max_per_query"],
                     db_path=cfg["accounts_db"],
+                    window_end=window_end,
                 )
+                competitor_results[name] = tweets
+                if cfg["max_per_query"] > 0 and len(tweets) >= cfg["max_per_query"]:
+                    _add_quality_warning(
+                        data_quality,
+                        f"竞品 {name} 达到抓取上限 {cfg['max_per_query']}，统计可能被截断",
+                    )
             except Exception as exc:
-                log.warning("竞品 %s 抓取失败: %s", name, exc)
                 competitor_results[name] = []
+                _add_quality_warning(
+                    data_quality,
+                    f"竞品 {name} 抓取失败（{type(exc).__name__}）",
+                )
 
         replies_by_id: dict = {}
-        top_for_replies = sorted(hailuo_tweets, key=lambda t: t.views, reverse=True)[:cfg["top_n_for_cooccur"]]
-        log.info("step3: 拉 top %d 推文的前 %d 评论", cfg["top_n_for_cooccur"], cfg["reply_limit_per_top"])
-        for t in top_for_replies:
+        top_for_replies = hailuo_tweets[:cfg["top_n_for_cooccur"]]
+        log.info(
+            "step3: 拉 top %d 推文的前 %d 评论",
+            cfg["top_n_for_cooccur"], cfg["reply_limit_per_top"],
+        )
+        for tweet in top_for_replies:
             try:
-                rpls = fetch_replies_sync(
-                    tweet_id=int(t.tweet_id),
+                replies = fetch_replies_sync(
+                    tweet_id=int(tweet.tweet_id),
                     limit=cfg["reply_limit_per_top"],
                     db_path=cfg["accounts_db"],
                 )
-                if rpls:
-                    replies_by_id[int(t.tweet_id)] = rpls
+                if replies:
+                    replies_by_id[int(tweet.tweet_id)] = replies
             except Exception as exc:
-                log.warning("评论拉取失败 %s: %s", t.url, exc)
+                _add_quality_warning(
+                    data_quality,
+                    f"推文 {tweet.tweet_id} 的评论抓取失败（{type(exc).__name__}）",
+                )
 
         log.info("step4: 分析聚合")
-        top5 = hailuo_tweets[:5]
+        full_report_url = _full_report_url(cfg["pages_base_url"], window_end)
+        generated_at = datetime.now(ZoneInfo(cfg["tz"]))
+        report_id = f"report_{window_end:%Y%m%d}_{generated_at:%Y%m%dT%H%M%S}"
         report = {
-            "summary": analyzer.compute_summary(hailuo_tweets),
-            "top_tweets": [t.to_dict() for t in top5],
-            "all_tweets": [t.to_dict() for t in hailuo_tweets],  # 全量用于完整报告
+            "meta": {
+                "report_id": report_id,
+                "report_date": window_end.strftime("%Y%m%d"),
+                "generated_at": generated_at.isoformat(),
+                "window_start": window_start.isoformat(),
+                "window_end": window_end.isoformat(),
+                "lookback_hours": cfg["lookback_hours"],
+                "full_report_url": full_report_url,
+            },
+            "data_quality": data_quality,
+            "summary": analyzer.compute_summary(hailuo_tweets, cfg["lookback_hours"]),
+            "top_tweets": [tweet.to_dict() for tweet in hailuo_tweets[:5]],
+            "all_tweets": [tweet.to_dict() for tweet in hailuo_tweets],
             "competitor_table": analyzer.build_competitor_table(competitor_results),
             "cooccurrence": analyzer.compute_cooccurrence(hailuo_tweets, replies_by_id),
             "topic_clusters": analyzer.compute_topic_clusters(hailuo_tweets),
             "risky_tweets": analyzer.compute_risks(hailuo_tweets),
         }
 
-        Path("cache").mkdir(exist_ok=True)
-        stamp = datetime.now().strftime('%Y%m%d_%H%M')
-        report_file = Path("cache") / f"report_{stamp}.json"
-        report_file.write_text(
-            json.dumps(report, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        report_file = _write_report(report)
+        log.info("step5: 渲染完整报告 HTML")
+        _render_report(report_file)
+
+        if send_report:
+            log.info("step6: 发飞书")
+            # 本地/launchd 运行只生成 HTML，并不会自动发布到 GitHub Pages。
+            _send_report(cfg, report, include_full_report_link=False)
+
+        log.info(
+            "==== 完成，耗时 %.1fs；共 %d 条 hailuo 推文；完整报告 %s ====",
+            time.time() - started_at,
+            report["summary"]["total_tweets"],
+            full_report_url,
         )
-
-        # 生成完整报告 HTML(给 GitHub Pages 用)
-        log.info("step5a: 渲染完整报告 HTML")
-        try:
-            import subprocess
-            subprocess.run(
-                [sys.executable, "scripts/render_full_report.py", str(report_file)],
-                check=True, cwd=Path.cwd(),
-            )
-        except Exception as exc:
-            log.warning("HTML 渲染失败(不影响飞书推送): %s", exc)
-
-        # GitHub Pages 链接:日期格式 YYYY-MM-DD
-        today = datetime.now().strftime('%Y-%m-%d')
-        pages_base = os.environ.get(
-            "PAGES_BASE_URL",
-            "https://Alicia1229.github.io/hailuo-x-bot",
-        )
-        full_report_url = f"{pages_base}/reports/{today}.html"
-
-        log.info("step5b: 发飞书")
-        card = feishu.build_card(report, lookback_hours=cfg["lookback_hours"],
-                                full_report_url=full_report_url)
-        size_kb = len(json.dumps(card)) // 1024
-        if size_kb > 18:
-            log.warning("卡片过大 (%dKB)，压缩示例", size_kb)
-            for tw in report["top_tweets"]:
-                tw["text"] = tw["text"][:120]
-            for cl in report["topic_clusters"]:
-                cl["examples"] = cl["examples"][:1]
-            card = feishu.build_card(report, lookback_hours=cfg["lookback_hours"],
-                                    full_report_url=full_report_url)
-
-        feishu.send(cfg["feishu_webhook"], card, secret=cfg["feishu_secret"])
-        log.info("==== 完成，耗时 %.1fs；共 %d 条 hailuo 推文；完整报告 %s ====",
-                 time.time() - t0, report["summary"]["total_tweets"], full_report_url)
-
-    except Exception:
+        return report_file
+    except Exception as exc:
         log.error("任务失败: %s", traceback.format_exc())
-        try:
-            err_card = feishu.build_error_card(traceback.format_exc()[-500:])
-            feishu.send(cfg["feishu_webhook"], err_card, secret=cfg["feishu_secret"])
-        except Exception:
-            log.error("失败通知也没发出去: %s", traceback.format_exc())
+        if notify_failure:
+            _notify_failure(cfg, exc)
+        raise
+
+
+def send_saved_report(cfg: dict, report_path: Path) -> None:
+    if report_path.suffix == ".txt":
+        report_path = Path(report_path.read_text(encoding="utf-8").strip())
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    _send_report(cfg, report)
+    log.info("已发送已发布报告: %s", report_path)
 
 
 def run_scheduler(cfg: dict) -> None:
-    tz = ZoneInfo(cfg["tz"])
-    sched = BlockingScheduler(timezone=tz)
-    sched.add_job(
+    timezone = ZoneInfo(cfg["tz"])
+    scheduler = BlockingScheduler(timezone=timezone)
+    scheduler.add_job(
         run_once,
         "cron",
         hour=cfg["push_hour"],
@@ -191,22 +322,49 @@ def run_scheduler(cfg: dict) -> None:
         max_instances=1,
         coalesce=True,
     )
-    log.info("调度启动: 每天 %02d:%02d %s 触发",
-             cfg["push_hour"], cfg["push_minute"], cfg["tz"])
-    sched.start()
+    log.info(
+        "调度启动: 每天 %02d:%02d %s 触发",
+        cfg["push_hour"], cfg["push_minute"], cfg["tz"],
+    )
+    scheduler.start()
+
+
+def main() -> None:
+    _configure_logging()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--once", action="store_true")
+    parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--send-report", type=Path)
+    args = parser.parse_args()
+
+    if args.prepare_only and not args.once:
+        parser.error("--prepare-only 必须与 --once 一起使用")
+    if args.send_report and (args.once or args.prepare_only):
+        parser.error("--send-report 不能与 --once/--prepare-only 同时使用")
+
+    required_keys = []
+    if args.send_report:
+        required_keys.append("FEISHU_WEBHOOK_URL")
+    else:
+        required_keys.append("KEYWORDS")
+        if not args.prepare_only:
+            required_keys.append("FEISHU_WEBHOOK_URL")
+    for key in required_keys:
+        if not os.environ.get(key):
+            sys.exit(f"❌ 环境变量 {key} 缺失，先按 .env.example 填好。")
+
+    cfg = _config()
+    if args.send_report:
+        send_saved_report(cfg, args.send_report)
+    elif args.once:
+        run_once(
+            cfg,
+            send_report=not args.prepare_only,
+            notify_failure=not args.prepare_only,
+        )
+    else:
+        run_scheduler(cfg)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--once", action="store_true")
-    args = parser.parse_args()
-    cfg = _config()
-
-    for k in ["FEISHU_WEBHOOK_URL", "KEYWORDS"]:
-        if not os.environ.get(k):
-            sys.exit(f"❌ 环境变量 {k} 缺失，先按 .env.example 填好。")
-
-    if args.once:
-        run_once(cfg)
-    else:
-        run_scheduler(cfg)
+    main()

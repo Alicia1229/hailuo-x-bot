@@ -69,8 +69,9 @@ def _parse_tweet(t) -> Tweet:
 async def fetch_for_query(
     query: str,
     since_hours: int = 24,
-    max: int = 200,
+    max: int = -1,
     db_path: str | Path = "accounts.db",
+    window_end: datetime | None = None,
 ) -> list[Tweet]:
     """给定任意 X 搜索 query，过去 since_hours 小时内的所有推文。
 
@@ -78,15 +79,18 @@ async def fetch_for_query(
     保证返回的 max 条一定都在窗口内（Python 端再过一道兜底）。
     """
     api = twscrape.API(db_path)
-    now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(hours=since_hours)
+    end = window_end or datetime.now(timezone.utc)
+    if end.tzinfo is None:
+        raise ValueError("window_end 必须包含时区")
+    end = end.astimezone(timezone.utc)
+    cutoff = end - timedelta(hours=since_hours)
     since_ts = int(cutoff.timestamp())
-    until_ts = int(now.timestamp())
+    until_ts = int(end.timestamp())
     # 用括号把调用方的 query 包起来，避免 since_time/until_time 只 OR 进最后一个关键词
     bounded = f"({query}) since_time:{since_ts} until_time:{until_ts}"
     log.info(
         "搜索 query=%r, 时间窗口=%s ~ %s UTC (server-side since_time=%s until_time=%s)",
-        query, cutoff.isoformat(), now.isoformat(), since_ts, until_ts,
+        query, cutoff.isoformat(), end.isoformat(), since_ts, until_ts,
     )
     # X 限流/网络抖动很常见：3 次重试，长退避（30s/2min/5min）
     # 短退避（15/30/45s）对网络抖动够用，对 X 单账号限流（通常 15 分钟级）
@@ -96,15 +100,25 @@ async def fetch_for_query(
     backoff = [30, 120, 300]
     last_err: Exception | None = None
     for try_n in range(attempts):
-        out: list[Tweet] = []
+        by_id: dict[str, Tweet] = {}
+        duplicate_count = 0
         try:
             async for t in api.search(bounded, limit=max):
-                # X 偶尔会回退一两分钟窗口外的，python 再兜底
-                if t.date < cutoff:
+                # X 偶尔会回退窗口外结果，Python 再做上下界兜底。
+                if not cutoff <= t.date < end:
                     continue
-                out.append(_parse_tweet(t))
+                parsed = _parse_tweet(t)
+                previous = by_id.get(parsed.tweet_id)
+                if previous is not None:
+                    duplicate_count += 1
+                if previous is None or parsed.views > previous.views:
+                    by_id[parsed.tweet_id] = parsed
+            out = list(by_id.values())
             out.sort(key=lambda x: x.views, reverse=True)
-            log.info("query=%r 命中 %d 条", query[:60], len(out))
+            log.info(
+                "query=%r 命中 %d 条（去重 %d 条）",
+                query[:60], len(out), duplicate_count,
+            )
             return out
         except Exception as exc:
             last_err = exc
@@ -137,24 +151,25 @@ async def fetch_replies_for(
 ) -> list[Tweet]:
     """拉一条推文下的回复。用于共现分析（评论区里也会提到竞品）。"""
     api = twscrape.API(db_path)
-    out: list[Tweet] = []
-    try:
-        async for t in api.tweet_replies(tweet_id, limit=limit):
-            out.append(_parse_tweet(t))
-    except Exception as exc:
-        log.warning("拉评论失败 tweet_id=%s: %s", tweet_id, exc)
-    return out
+    by_id: dict[str, Tweet] = {}
+    async for t in api.tweet_replies(tweet_id, limit=limit):
+        parsed = _parse_tweet(t)
+        by_id[parsed.tweet_id] = parsed
+    return list(by_id.values())
 
 
 async def fetch_recent_tweets(
     keywords: list[str],
     since_hours: int = 24,
-    max_per_query: int = 200,
+    max_per_query: int = -1,
     db_path: str | Path = "accounts.db",
+    window_end: datetime | None = None,
 ) -> list[Tweet]:
     """（保留原接口）抓过去 since_hours 小时内、命中任一关键词的推文，按 views 降序。"""
     query = build_query(keywords)
-    results = await fetch_for_query(query, since_hours, max_per_query, db_path)
+    results = await fetch_for_query(
+        query, since_hours, max_per_query, db_path, window_end=window_end,
+    )
     # 二次保险：可能 twscrape 内部 parser 漏判，再过一道关键词
     results = [t for t in results if any(kw.lower() in t.text.lower() for kw in keywords)]
     return results

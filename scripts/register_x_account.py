@@ -14,6 +14,8 @@
 import argparse
 import asyncio
 import getpass
+import os
+from pathlib import Path
 
 import twscrape
 
@@ -29,29 +31,44 @@ async def main():
 
     api = twscrape.API(args.db)
 
+    async def save_account(username: str, auth_token: str, ct0: str) -> None:
+        if not username or not auth_token or not ct0:
+            raise ValueError("username、auth_token、ct0 均不能为空")
+        try:
+            existing = await api.pool.get(username)
+        except ValueError:
+            existing = None
+        if existing:
+            await api.pool.delete_accounts(username)
+        cookie_str = f"auth_token={auth_token}; ct0={ct0}"
+        await api.pool.add_account(
+            username, password="x", email="x", email_password="x",
+            cookies=cookie_str,
+        )
+        print(f"✅ 已{'更新' if existing else '添加'} {username}")
+
     if args.batch:
         with open(args.batch) as f:
-            for line in f:
+            for line_number, line in enumerate(f, 1):
                 parts = line.strip().split()
                 if len(parts) != 3:
-                    print(f"跳过格式错的行: {line!r}")
+                    print(f"⚠️ 跳过格式错误的第 {line_number} 行")
                     continue
                 u, tok, ct = parts
-                cookie_str = f"auth_token={tok}; ct0={ct}"
-                await api.pool.add_account(u, "x", "x", "x", cookies=cookie_str)
-                print(f"✅ 已添加 {u}")
+                await save_account(u, tok, ct)
+        Path(args.db).chmod(0o600)
         return
 
-    username = args.username or input("X 用户名（@handle，不要带 @）: ").strip()
-    auth_token = args.auth_token or getpass.getpass("auth_token: ").strip()
-    ct0 = args.ct0 or getpass.getpass("ct0: ").strip()
+    username = args.username or os.environ.get("X_USERNAME") or input(
+        "X 用户名（@handle，不要带 @）: "
+    ).strip()
+    auth_token = args.auth_token or os.environ.get("X_AUTH_TOKEN") or getpass.getpass(
+        "auth_token: "
+    ).strip()
+    ct0 = args.ct0 or os.environ.get("X_CT0") or getpass.getpass("ct0: ").strip()
 
-    cookie_str = f"auth_token={auth_token}; ct0={ct0}"
-    await api.pool.add_account(
-        username, password="x", email="x", email_password="x",
-        cookies=cookie_str,
-    )
-    print(f"✅ 已添加 {username}")
+    await save_account(username, auth_token, ct0)
+    Path(args.db).chmod(0o600)
 
 
 if __name__ == "__main__":

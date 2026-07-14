@@ -37,6 +37,15 @@ def _truncate(s: str, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+def _safe_md_text(value: object) -> str:
+    """把外部文本变成不可注入链接/标签的飞书 Markdown 纯文本。"""
+    return str(value).translate(str.maketrans({
+        "[": "［", "]": "］", "(": "（", ")": "）",
+        "<": "＜", ">": "＞", "*": "＊", "_": "＿",
+        "`": "｀", "~": "～", "|": "｜", "\\": "＼",
+    }))
+
+
 def _fmt(n: int) -> str:
     if n < 10_000:
         return str(n)
@@ -71,6 +80,7 @@ def send(webhook_url: str, payload: dict, secret: str | None = None, timeout: fl
 
 def render_summary(report: dict) -> list[dict]:
     s = report["summary"]
+    window_hours = s.get("window_hours", 24)
     rows = [
         ["指标", "值"],
         ["推文数", f"{s['total_tweets']}"],
@@ -85,7 +95,10 @@ def render_summary(report: dict) -> list[dict]:
     ])
     return [{
         "tag": "div",
-        "text": {"tag": "lark_md", "content": "**📊 24h 摘要**\n" + table_md},
+        "text": {
+            "tag": "lark_md",
+            "content": f"**📊 {window_hours}h 摘要**\n" + table_md,
+        },
     }, {"tag": "hr"}]
 
 
@@ -102,7 +115,7 @@ def render_top_tweets(tweets: list[dict], cap: int = 5) -> list[dict]:
             f"👁 **{_fmt(t['views'])}** · engagement **{_fmt(eng)}** "
             f"(❤️{_fmt(t.get('likes', 0))} · 🔁{_fmt(t.get('retweets', 0))} · 💬{_fmt(t.get('replies', 0))} · 🔁引{_fmt(t.get('quotes', 0))})\n"
             f"<font color='grey'>{t['created_at'][:16].replace('T', ' ')} UTC</font>\n"
-            f"{_truncate(t['text'], 160)}\n"
+            f"{_truncate(_safe_md_text(t['text']), 160)}\n"
             f"🔗 [打开推文]({t['url']})"
         )
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": line}})
@@ -110,11 +123,11 @@ def render_top_tweets(tweets: list[dict], cap: int = 5) -> list[dict]:
     return elements
 
 
-def render_competitor_table(rows: list[dict]) -> list[dict]:
+def render_competitor_table(rows: list[dict], lookback_hours: int = 24) -> list[dict]:
     if not rows:
         return [{"tag": "div", "text": {"tag": "lark_md", "content": "_竞品对比数据暂缺_"}}]
     lines = [
-        "**🥊 竞品横向对比（同期 24h）**",
+        f"**🥊 竞品横向对比（同期 {lookback_hours}h）**",
         "| 竞品 | 推文数 | 总 Views | 总 Engagement |",
         "| --- | --- | --- | --- |",
     ]
@@ -153,7 +166,7 @@ def render_topic_clusters(clusters: list[dict]) -> list[dict]:
         for t in c.get("examples", [])[:2]:
             exs.append(
                 f"   • [{t['author']}]({t['author_url']}) 👁{_fmt(t['views'])} — "
-                f"{_truncate(t['text'], 70)} ([原推]({t['url']}))"
+                f"{_truncate(_safe_md_text(t['text']), 70)} ([原推]({t['url']}))"
             )
         body = header + ("\n" + "\n".join(exs) if exs else "")
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": body}})
@@ -174,7 +187,7 @@ def render_risks(risks: list[dict]) -> list[dict]:
         lines.append(
             f"- 情感分 **{r['score']}** · [{t['author']}]({t['author_url']}) 👁{_fmt(t['views'])} "
             f"❤️{_fmt(t['likes'])} 💬{_fmt(t['replies'])}\n"
-            f"  _\"{_truncate(r.get('reason', ''), 80)}\"_\n"
+            f"  _\"{_truncate(_safe_md_text(r.get('reason', '')), 80)}\"_\n"
             f"  🔗 [打开]({t['url']})"
         )
     elements = [{
@@ -206,9 +219,20 @@ def build_card(
         template = "grey"
 
     body_elements: list[dict] = []
+    warnings = report.get("data_quality", {}).get("warnings", [])
+    if warnings:
+        warning_lines = ["**⚠️ 数据可能不完整**"]
+        warning_lines.extend(f"- {_safe_md_text(item)}" for item in warnings)
+        body_elements.extend([{
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": "\n".join(warning_lines)},
+        }, {"tag": "hr"}])
     body_elements.extend(render_summary(report))
     body_elements.extend(render_top_tweets(report.get("top_tweets", [])))
-    body_elements.extend(render_competitor_table(report.get("competitor_table", [])))
+    body_elements.extend(render_competitor_table(
+        report.get("competitor_table", []),
+        lookback_hours=lookback_hours,
+    ))
     body_elements.extend(render_cooccurrence(report.get("cooccurrence", [])))
     body_elements.extend(render_topic_clusters(report.get("topic_clusters", [])))
     body_elements.extend(render_risks(report.get("risky_tweets", [])))
@@ -257,7 +281,7 @@ def build_error_card(error: str) -> dict:
                 "elements": [{
                     "tag": "div",
                     "text": {"tag": "lark_md",
-                             "content": f"**错误**: {error[:500]}"},
+                             "content": f"**错误**: {_safe_md_text(error[:500])}"},
                 }],
             },
         },

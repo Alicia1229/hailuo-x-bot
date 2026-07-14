@@ -50,6 +50,8 @@ HTML_TEMPLATE = """<!doctype html>
   .text {{ max-width: 480px; }}
   .badge {{ display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 11px;
             background: #ddf4ff; color: #0969da; }}
+  .warning {{ background: #fff8c5; border: 1px solid #d4a72c; border-radius: 6px;
+              padding: 10px 12px; margin-bottom: 16px; color: #633c01; }}
   .empty {{ text-align: center; padding: 40px; color: #656d76; }}
   .row-hidden {{ display: none; }}
 </style>
@@ -57,6 +59,7 @@ HTML_TEMPLATE = """<!doctype html>
 <body>
 <h1>📊 {title}</h1>
 <div class="meta">{meta}</div>
+{quality_html}
 
 <div class="summary">
   <div class="card"><div class="label">推文数</div><div class="value">{total_tweets}</div></div>
@@ -169,23 +172,40 @@ def main():
     # 全量 tweets 优先从 report["all_tweets"] 读,没有就用 top_tweets
     tweets = report.get("all_tweets") or report.get("top_tweets", [])
     summary = report.get("summary", {})
+    meta = report.get("meta", {})
+    data_quality = report.get("data_quality", {})
+    tweets.sort(key=lambda tweet: tweet.get("views", 0), reverse=True)
 
-    if not tweets:
-        sys.exit("❌ report 里没有推文数据")
-
-    # 文件名用报告里的时间戳,或 fallback 到文件名
+    # 新报告优先使用固定窗口日期，旧报告再从文件名兼容推导。
     fname_stem = report_path.stem
     for prefix in ("report_", "full_"):
         if fname_stem.startswith(prefix):
             fname_stem = fname_stem[len(prefix):]
             break
-    date_str = fname_stem[:8]  # YYYYMMDD
+    date_str = meta.get("report_date") or fname_stem[:8]
+    if len(date_str) != 8 or not date_str.isdigit():
+        sys.exit(f"❌ 无效报告日期: {date_str!r}")
     pretty_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
     rows_html = "\n".join(render_tweet_row(t) for t in tweets)
+    if not rows_html:
+        rows_html = '    <tr><td class="empty" colspan="9">该时间窗口没有匹配推文</td></tr>'
+    warnings = data_quality.get("warnings", [])
+    quality_html = ""
+    if warnings:
+        warning_items = "".join(f"<li>{escape(str(item))}</li>" for item in warnings)
+        quality_html = f'<div class="warning"><strong>⚠️ 数据可能不完整</strong><ul>{warning_items}</ul></div>'
+    report_id = meta.get("report_id", report_path.stem)
+    window_start = meta.get("window_start", "")
+    window_end = meta.get("window_end", "")
+    generated_at = meta.get("generated_at", fname_stem)
     html = HTML_TEMPLATE.format(
         title=f"Hailuo X 全量推文 · {pretty_date}",
-        meta=f"生成时间 {fname_stem} · 数据源: X 搜索 · 报告 ID: {report_path.stem}",
+        meta=escape(
+            f"固定窗口 {window_start} ~ {window_end} · 生成时间 {generated_at} · "
+            f"数据源: X 搜索 · 报告 ID: {report_id}"
+        ),
+        quality_html=quality_html,
         total_tweets=summary.get("total_tweets", len(tweets)),
         total_views=summary.get("total_views", 0),
         total_engagement=summary.get("total_engagement", 0),

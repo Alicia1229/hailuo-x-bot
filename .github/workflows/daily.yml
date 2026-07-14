@@ -1,5 +1,5 @@
 # GitHub Actions：每天 UTC 时间一个固定点跑一次（每天 19:00 Asia/Shanghai = 11:00 UTC）
-# 把这个 repo 推到 GitHub（私有仓库即可）后就会自动生效；电脑关机也不影响。
+# 仓库启用 GitHub Pages 后自动生效；电脑关机也不影响。
 # Secrets 里需要配：
 #   FEISHU_WEBHOOK_URL
 #   FEISHU_SECRET (可选)
@@ -13,34 +13,43 @@ on:
     - cron: "0 11 * * *"   # 19:00 Asia/Shanghai = 11:00 UTC
   workflow_dispatch:        # 允许手动触发
 
+concurrency:
+  group: daily-x-report
+  cancel-in-progress: true
+
 permissions:
   contents: write           # 让 workflow 能 commit + push docs/
 
 jobs:
   push:
     runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      TZ: Asia/Shanghai
+      KEYWORDS: "hailuo03,hailuo3,hailuo,hailuoai,MiniMax Video,MiniMax H3"
+      COMPETITOR_KEYWORDS: "Seedance,Dreamina,Kling,Vidu,Pika,Runway,Happy Horse,Higgsfield"
+      LOOKBACK_HOURS: "24"
+      MAX_HAILUO_TWEETS: "-1"
+      MAX_PER_QUERY: "-1"
+      REPLY_LIMIT_PER_TOP: "10"
+      TOP_N_FOR_COOCUR: "5"
+      PAGES_BASE_URL: "https://Alicia1229.github.io/hailuo-x-bot"
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: true   # 让 GITHUB_TOKEN 能 push
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13"
       - run: pip install -r requirements.txt
       - name: Register X account
-        run: |
-          python scripts/register_x_account.py \
-            --username "${{ secrets.X_USERNAME }}" \
-            "${{ secrets.X_AUTH_TOKEN }}" \
-            "${{ secrets.X_CT0 }}"
-      - name: Push
         env:
-          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
-          FEISHU_SECRET:      ${{ secrets.FEISHU_SECRET }}
-          TZ: Asia/Shanghai
-          KEYWORDS: "hailuo03,hailuo3,hailuo,hailuoai,MiniMax Video,MiniMax H3"
-          PAGES_BASE_URL: "https://Alicia1229.github.io/hailuo-x-bot"
-        run: python -m src.main --once
+          X_USERNAME: ${{ secrets.X_USERNAME }}
+          X_AUTH_TOKEN: ${{ secrets.X_AUTH_TOKEN }}
+          X_CT0: ${{ secrets.X_CT0 }}
+        run: python scripts/register_x_account.py
+      - name: Prepare report
+        run: python -m src.main --once --prepare-only
       - name: Publish full report to GitHub Pages
         run: |
           if [ -d docs/reports ]; then
@@ -54,3 +63,16 @@ jobs:
               git push
             fi
           fi
+      - name: Wait for GitHub Pages
+        run: python scripts/wait_for_report.py cache/latest_report_path.txt
+      - name: Send Feishu card
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
+        run: python -m src.main --send-report cache/latest_report_path.txt
+      - name: Notify workflow failure
+        if: ${{ failure() }}
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
+        run: python scripts/notify_workflow_failure.py

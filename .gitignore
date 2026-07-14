@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 .env
 accounts.db
+accounts_seed*.txt
 cache/*.json
+cache/*.txt
 logs/*.log
 .DS_Store

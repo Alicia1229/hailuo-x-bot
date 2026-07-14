@@ -19,13 +19,13 @@ KEYWORDS = [k.strip() for k in os.environ["KEYWORDS"].split(",") if k.strip()]
 query = " OR ".join(f'"{k}"' if " " in k else k for k in KEYWORDS)
 DB = os.environ.get("X_ACCOUNTS_DB", "accounts.db")
 
-sys.stderr.write(f"关键词: {KEYWORDS}\nquery: {query}\n拉过去 24h,上限 500 条…\n")
+sys.stderr.write(f"关键词: {KEYWORDS}\nquery: {query}\n拉过去 24h,不设条数上限…\n")
 sys.stderr.flush()
 
 tweets = fetch_for_query_sync(
     query=query,
     since_hours=24,
-    max=500,
+    max=-1,
     db_path=DB,
 )
 
