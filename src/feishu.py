@@ -207,15 +207,22 @@ def build_card(
     full_report_url: str | None = None,
 ) -> dict:
     s = report.get("summary", {})
+    report_date = str(report.get("meta", {}).get("report_date", ""))
+    if len(report_date) == 8 and report_date.isdigit():
+        date_prefix = f"{report_date[:4]}-{report_date[4:6]}-{report_date[6:8]} · "
+    else:
+        date_prefix = ""
     total = s.get("total_tweets", 0)
     if total > 0:
         header_title = (
-            f"Hailuo X 日报 · 过去 {lookback_hours}h · "
+            f"{date_prefix}Hailuo X 日报 · 过去 {lookback_hours}h · "
             f"{total} 条 · {_fmt(s.get('total_views', 0))} views"
         )
         template = "blue"
     else:
-        header_title = f"Hailuo X 日报 · 过去 {lookback_hours}h · 无数据"
+        header_title = (
+            f"{date_prefix}Hailuo X 日报 · 过去 {lookback_hours}h · 无数据"
+        )
         template = "grey"
 
     body_elements: list[dict] = []
