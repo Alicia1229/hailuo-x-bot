@@ -89,9 +89,9 @@ bash scripts/install_launchd.sh
    - `X_CT0` —— ct0
    - `X_USERNAME` —— 你的 X @handle 不带 @
 3. Actions → 启用 workflows
-4. 默认 `cron: "0 11 * * *"` = 每天 **19:00 Asia/Shanghai**
+4. 默认 `cron: "0 9 * * *"` = 每天 **17:00 Asia/Shanghai**
 
-> GitHub 的 cron 是 UTC 时区。每天 19:00 Asia/Shanghai = 11:00 UTC，可直接用现成的。
+> GitHub 的 cron 是 UTC 时区。每天 17:00 Asia/Shanghai = 09:00 UTC，可直接用现成的。
 >
 > 云端流程会先生成并 push GitHub Pages，确认本次报告 ID 已上线后再发送飞书；任一步骤失败都会让 Actions 标红。
 > 本地/launchd 模式不会自动发布 GitHub Pages，因此飞书卡片不附完整报告链接，避免发送尚未上线的地址。

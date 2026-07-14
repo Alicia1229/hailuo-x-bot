@@ -1,4 +1,4 @@
-# GitHub Actions：每天 UTC 时间一个固定点跑一次（每天 19:00 Asia/Shanghai = 11:00 UTC）
+# GitHub Actions：每天 UTC 时间一个固定点跑一次（每天 17:00 Asia/Shanghai = 09:00 UTC）
 # 仓库启用 GitHub Pages 后自动生效；电脑关机也不影响。
 # Secrets 里需要配：
 #   FEISHU_WEBHOOK_URL
@@ -10,7 +10,7 @@ name: daily-x-report
 
 on:
   schedule:
-    - cron: "0 11 * * *"   # 19:00 Asia/Shanghai = 11:00 UTC
+    - cron: "0 9 * * *"    # 17:00 Asia/Shanghai = 09:00 UTC
   workflow_dispatch:        # 允许手动触发
 
 concurrency:
@@ -26,6 +26,8 @@ jobs:
     timeout-minutes: 180
     env:
       TZ: Asia/Shanghai
+      PUSH_HOUR: "17"
+      PUSH_MINUTE: "0"
       KEYWORDS: "hailuo03,hailuo3,hailuo,hailuoai,MiniMax Video,MiniMax H3"
       COMPETITOR_KEYWORDS: "Seedance,Dreamina,Kling,Vidu,Pika,Runway,Happy Horse,Higgsfield"
       LOOKBACK_HOURS: "24"
