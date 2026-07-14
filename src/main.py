@@ -118,6 +118,7 @@ def run_once(cfg: dict) -> None:
         report = {
             "summary": analyzer.compute_summary(hailuo_tweets),
             "top_tweets": [t.to_dict() for t in top5],
+            "all_tweets": [t.to_dict() for t in hailuo_tweets],  # 全量用于完整报告
             "competitor_table": analyzer.build_competitor_table(competitor_results),
             "cooccurrence": analyzer.compute_cooccurrence(hailuo_tweets, replies_by_id),
             "topic_clusters": analyzer.compute_topic_clusters(hailuo_tweets),
@@ -125,13 +126,35 @@ def run_once(cfg: dict) -> None:
         }
 
         Path("cache").mkdir(exist_ok=True)
-        (Path("cache") / f"report_{datetime.now().strftime('%Y%m%d_%H%M')}.json").write_text(
+        stamp = datetime.now().strftime('%Y%m%d_%H%M')
+        report_file = Path("cache") / f"report_{stamp}.json"
+        report_file.write_text(
             json.dumps(report, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
-        log.info("step5: 发飞书")
-        card = feishu.build_card(report, lookback_hours=cfg["lookback_hours"])
+        # 生成完整报告 HTML(给 GitHub Pages 用)
+        log.info("step5a: 渲染完整报告 HTML")
+        try:
+            import subprocess
+            subprocess.run(
+                [sys.executable, "scripts/render_full_report.py", str(report_file)],
+                check=True, cwd=Path.cwd(),
+            )
+        except Exception as exc:
+            log.warning("HTML 渲染失败(不影响飞书推送): %s", exc)
+
+        # GitHub Pages 链接:日期格式 YYYY-MM-DD
+        today = datetime.now().strftime('%Y-%m-%d')
+        pages_base = os.environ.get(
+            "PAGES_BASE_URL",
+            "https://Alicia1229.github.io/hailuo-x-bot",
+        )
+        full_report_url = f"{pages_base}/reports/{today}.html"
+
+        log.info("step5b: 发飞书")
+        card = feishu.build_card(report, lookback_hours=cfg["lookback_hours"],
+                                full_report_url=full_report_url)
         size_kb = len(json.dumps(card)) // 1024
         if size_kb > 18:
             log.warning("卡片过大 (%dKB)，压缩示例", size_kb)
@@ -139,11 +162,12 @@ def run_once(cfg: dict) -> None:
                 tw["text"] = tw["text"][:120]
             for cl in report["topic_clusters"]:
                 cl["examples"] = cl["examples"][:1]
-            card = feishu.build_card(report, lookback_hours=cfg["lookback_hours"])
+            card = feishu.build_card(report, lookback_hours=cfg["lookback_hours"],
+                                    full_report_url=full_report_url)
 
         feishu.send(cfg["feishu_webhook"], card, secret=cfg["feishu_secret"])
-        log.info("==== 完成，耗时 %.1fs；共 %d 条 hailuo 推文 ====",
-                 time.time() - t0, report["summary"]["total_tweets"])
+        log.info("==== 完成，耗时 %.1fs；共 %d 条 hailuo 推文；完整报告 %s ====",
+                 time.time() - t0, report["summary"]["total_tweets"], full_report_url)
 
     except Exception:
         log.error("任务失败: %s", traceback.format_exc())

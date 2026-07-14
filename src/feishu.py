@@ -188,7 +188,11 @@ def render_risks(risks: list[dict]) -> list[dict]:
     return elements
 
 
-def build_card(report: dict, lookback_hours: int = 24) -> dict:
+def build_card(
+    report: dict,
+    lookback_hours: int = 24,
+    full_report_url: str | None = None,
+) -> dict:
     s = report.get("summary", {})
     total = s.get("total_tweets", 0)
     if total > 0:
@@ -208,6 +212,20 @@ def build_card(report: dict, lookback_hours: int = 24) -> dict:
     body_elements.extend(render_cooccurrence(report.get("cooccurrence", [])))
     body_elements.extend(render_topic_clusters(report.get("topic_clusters", [])))
     body_elements.extend(render_risks(report.get("risky_tweets", [])))
+
+    # 完整报告链接(部署在 GitHub Pages)
+    if full_report_url and total > 0:
+        body_elements.append({"tag": "hr"})
+        body_elements.append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": (
+                    f"📊 **查看完整 {total} 条推文(可搜索/排序/过滤)**\n"
+                    f"[👉 打开完整报告]({full_report_url})"
+                ),
+            },
+        })
 
     return {
         "msg_type": "interactive",

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Hailuo X 舆情日报</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  * { box-sizing: border-box; }
+  body { font: 14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+         margin: 0; padding: 24px; background: #f6f8fa; color: #1f2328; }
+  h1 { font-size: 22px; margin: 0 0 8px; }
+  .meta { color: #656d76; margin-bottom: 24px; font-size: 13px; }
+  ul { list-style: none; padding: 0; margin: 0; max-width: 600px; }
+  li { background: #fff; border: 1px solid #d0d7de; border-radius: 6px;
+       margin-bottom: 8px; padding: 12px 16px; display: flex; justify-content: space-between; align-items: center; }
+  li a { color: #0969da; text-decoration: none; font-weight: 500; }
+  li a:hover { text-decoration: underline; }
+  .date { color: #656d76; font-size: 12px; }
+  .empty { text-align: center; padding: 60px 20px; color: #656d76; }
+  .hint { background: #ddf4ff; border-left: 3px solid #0969da; padding: 10px 14px;
+          border-radius: 4px; margin: 16px 0; font-size: 13px; color: #1f2328; }
+</style>
+</head>
+<body>
+<h1>📊 Hailuo X 舆情日报</h1>
+<div class="meta">每天 19:00 (Asia/Shanghai) 自动更新 · 抓 X 上提到 hailuo / MiniMax Video / MiniMax H3 等关键词的推文</div>
+<div class="hint">💡 飞书群每天会收到 Top 5 摘要卡片,点这里能看完整列表(可搜索、排序、过滤低质量)。</div>
+<div id="list" class="empty">加载中…</div>
+<script>
+fetch('reports/manifest.json?_=' + Date.now())
+  .then(r => r.ok ? r.json() : [])
+  .then(list => {
+    const root = document.getElementById('list');
+    if (!list.length) {
+      root.innerHTML = '<div class="empty">还没生成任何报告。bot 跑完一次后会自动出现。</div>';
+      return;
+    }
+    const ul = document.createElement('ul');
+    for (const d of list) {
+      const li = document.createElement('li');
+      const a = document.createElement('a');
+      a.href = 'reports/' + d.file;
+      a.textContent = '📄 ' + d.label;
+      const meta = document.createElement('span');
+      meta.className = 'date';
+      meta.textContent = d.count + ' 条';
+      li.appendChild(a);
+      li.appendChild(meta);
+      ul.appendChild(li);
+    }
+    root.className = '';
+    root.appendChild(ul);
+  })
+  .catch(() => {
+    document.getElementById('list').innerHTML = '<div class="empty">还没生成任何报告。bot 跑完一次后会自动出现。</div>';
+  });
+</script>
+</body>
+</html>
