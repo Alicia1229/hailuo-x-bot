@@ -222,8 +222,30 @@ def compute_related_terms(
     ]
 
 
-def compute_public_opinion(tweets: list[Tweet], limit: int = 3) -> list[dict]:
-    """按讨论话题聚合舆情，而不是给代表帖打正/中/负标签。"""
+def compute_public_opinion(
+    tweets: list[Tweet],
+    limit: int = 3,
+    openai_api_key: str | None = None,
+    openai_base_url: str = "https://api.openai.com/v1",
+    model: str = "gpt-5-mini",
+) -> list[dict]:
+    """按讨论话题聚合舆情；配置 AI 后由 AI 归纳主题，失败时退回规则。"""
+    if openai_api_key:
+        try:
+            return compute_public_opinion_ai(
+                tweets,
+                limit=limit,
+                openai_api_key=openai_api_key,
+                openai_base_url=openai_base_url,
+                model=model,
+            )
+        except Exception as exc:
+            log.warning("AI 话题总结失败，退回词典规则: %s", exc)
+    return compute_public_opinion_by_dictionary(tweets, limit=limit)
+
+
+def compute_public_opinion_by_dictionary(tweets: list[Tweet], limit: int = 3) -> list[dict]:
+    """词典兜底：按讨论话题聚合舆情，而不是给代表帖打正/中/负标签。"""
     topic_tweets: dict[str, dict[str, object]] = {}
     for tweet in tweets:
         text_lower = tweet.text.lower()
@@ -273,6 +295,141 @@ def compute_public_opinion(tweets: list[Tweet], limit: int = 3) -> list[dict]:
             "engagement": engagement,
             "keywords": terms,
             "tweet": topic_items[0].to_dict(),
+        })
+
+    items.sort(
+        key=lambda item: (item["count"], item["engagement"], item["views"]),
+        reverse=True,
+    )
+    return items[:limit]
+
+
+def compute_public_opinion_ai(
+    tweets: list[Tweet],
+    limit: int,
+    openai_api_key: str,
+    openai_base_url: str = "https://api.openai.com/v1",
+    model: str = "gpt-5-mini",
+) -> list[dict]:
+    """用 AI 从命中推文里总结真实讨论主题，并返回飞书卡片可渲染结构。"""
+    if not tweets:
+        return []
+
+    ranked = sorted(
+        tweets,
+        key=lambda tweet: (tweet.views, tweet.engagement()),
+        reverse=True,
+    )
+    payload = _build_topic_payload(ranked[:120])
+    response = _call_openai_topic_judge(
+        openai_api_key=openai_api_key,
+        openai_base_url=openai_base_url,
+        model=model,
+        payload=payload,
+        limit=limit,
+    )
+    topics = _normalize_ai_topics(response, tweets, limit)
+    if not topics:
+        return compute_public_opinion_by_dictionary(tweets, limit=limit)
+    return topics
+
+
+def _build_topic_payload(tweets: list[Tweet]) -> list[dict]:
+    return [{
+        "tweet_id": tweet.tweet_id,
+        "author": tweet.author,
+        "views": tweet.views,
+        "engagement": tweet.engagement(),
+        "text": re.sub(r"\s+", " ", tweet.text or "")[:800],
+    } for tweet in tweets]
+
+
+def _call_openai_topic_judge(
+    openai_api_key: str,
+    openai_base_url: str,
+    model: str,
+    payload: list[dict],
+    limit: int,
+) -> dict:
+    system_prompt = (
+        "你是 Hailuo / MiniMax Video 的社媒舆情分析员。"
+        "你的任务是从命中推文中归纳大家真正讨论最多的话题，而不是判断正面/中性/负面。"
+        "话题标题要像人写的业务洞察，例如：价格低 / 免费额度、商业应用场景、"
+        "画质与生成效果、教程与工作流、和竞品对比、角色一致性、短片广告案例。"
+        "同一条推文最多归入一个最主要话题。优先选择推文数量多的话题；数量接近时，"
+        "优先选择总互动和总 views 更高的话题。不要编造 tweet_id。只输出 JSON。"
+    )
+    user_prompt = (
+        f"请总结 Top {limit} 个热议话题。返回格式："
+        '{"topics":[{"summary":"短话题名，<=12字或<=6个英文词",'
+        '"keywords":["关键词1","关键词2"],'
+        '"tweet_ids":["..."],'
+        '"reason":"为什么这些帖子属于这个话题，<=50字"}]}'
+        "\n推文：\n"
+        + json.dumps(payload, ensure_ascii=False)
+    )
+    endpoint = f"{openai_base_url.rstrip('/')}/responses"
+    with httpx.Client(timeout=90) as client:
+        response = client.post(
+            endpoint,
+            headers={
+                "Authorization": f"Bearer {openai_api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "input": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "max_output_tokens": 2500,
+            },
+        )
+    response.raise_for_status()
+    return _parse_openai_json(response.json())
+
+
+def _normalize_ai_topics(
+    response: dict,
+    tweets: list[Tweet],
+    limit: int,
+) -> list[dict]:
+    by_id = {str(tweet.tweet_id): tweet for tweet in tweets}
+    used_ids: set[str] = set()
+    total = max(len(tweets), 1)
+    items: list[dict] = []
+
+    for raw in response.get("topics", [])[:limit * 2]:
+        summary = str(raw.get("summary") or raw.get("topic") or "").strip()
+        tweet_ids = [
+            str(tweet_id)
+            for tweet_id in raw.get("tweet_ids", [])
+            if str(tweet_id) in by_id and str(tweet_id) not in used_ids
+        ]
+        if not summary or not tweet_ids:
+            continue
+
+        topic_tweets = [by_id[tweet_id] for tweet_id in tweet_ids]
+        topic_tweets.sort(key=lambda tweet: (tweet.views, tweet.engagement()), reverse=True)
+        used_ids.update(tweet_ids)
+
+        keywords = raw.get("keywords", [])
+        if not isinstance(keywords, list):
+            keywords = []
+        keywords = [str(keyword).strip() for keyword in keywords if str(keyword).strip()]
+
+        count = len(topic_tweets)
+        items.append({
+            "topic": summary,
+            "summary": summary,
+            "count": count,
+            "pct": round(count / total * 100, 1),
+            "views": sum(tweet.views for tweet in topic_tweets),
+            "engagement": sum(tweet.engagement() for tweet in topic_tweets),
+            "keywords": keywords[:5],
+            "tweet": topic_tweets[0].to_dict(),
+            "source": "ai",
+            "reason": str(raw.get("reason") or "")[:120],
         })
 
     items.sort(

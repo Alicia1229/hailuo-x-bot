@@ -292,7 +292,12 @@ def run_once(
                 hailuo_tweets,
                 excluded_terms=cfg["keywords"],
             ),
-            "public_opinion": analyzer.compute_public_opinion(hailuo_tweets),
+            "public_opinion": analyzer.compute_public_opinion(
+                hailuo_tweets,
+                openai_api_key=cfg["openai_api_key"],
+                openai_base_url=cfg["openai_base_url"],
+                model=cfg["risk_model"],
+            ),
             "risky_tweets": analyzer.compute_risks(
                 hailuo_tweets,
                 openai_api_key=cfg["openai_api_key"],
