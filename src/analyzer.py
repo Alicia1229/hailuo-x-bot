@@ -414,12 +414,18 @@ def compute_risks(
     tweets: list[Tweet],
     threshold: float = -0.5,
     openai_api_key: str | None = None,
+    openai_base_url: str = "https://api.openai.com/v1",
     model: str = "gpt-5-mini",
 ) -> list[dict]:
     """风险监控：优先用 AI 判定，未配置或失败时退回词典规则。"""
     if openai_api_key:
         try:
-            return compute_risks_ai(tweets, openai_api_key=openai_api_key, model=model)
+            return compute_risks_ai(
+                tweets,
+                openai_api_key=openai_api_key,
+                openai_base_url=openai_base_url,
+                model=model,
+            )
         except Exception as exc:
             log.warning("AI 风险判定失败，退回词典规则: %s", exc)
     return compute_risks_by_dictionary(tweets, threshold=threshold)
@@ -444,6 +450,7 @@ def compute_risks_by_dictionary(tweets: list[Tweet], threshold: float = -0.5) ->
 def compute_risks_ai(
     tweets: list[Tweet],
     openai_api_key: str,
+    openai_base_url: str = "https://api.openai.com/v1",
     model: str = "gpt-5-mini",
     batch_size: int = 15,
 ) -> list[dict]:
@@ -457,6 +464,7 @@ def compute_risks_ai(
         payload = _build_risk_payload(batch)
         response = _call_openai_risk_judge(
             openai_api_key=openai_api_key,
+            openai_base_url=openai_base_url,
             model=model,
             payload=payload,
         )
@@ -489,6 +497,7 @@ def _build_risk_payload(tweets: list[Tweet]) -> list[dict]:
 
 def _call_openai_risk_judge(
     openai_api_key: str,
+    openai_base_url: str,
     model: str,
     payload: list[dict],
 ) -> dict:
@@ -509,9 +518,10 @@ def _call_openai_risk_judge(
         "\n推文：\n"
         + json.dumps(payload, ensure_ascii=False)
     )
+    endpoint = f"{openai_base_url.rstrip('/')}/responses"
     with httpx.Client(timeout=60) as client:
         response = client.post(
-            "https://api.openai.com/v1/responses",
+            endpoint,
             headers={
                 "Authorization": f"Bearer {openai_api_key}",
                 "Content-Type": "application/json",

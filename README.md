@@ -89,6 +89,8 @@ bash scripts/install_launchd.sh
    - `X_CT0` —— ct0
    - `X_USERNAME` —— 你的 X @handle 不带 @
    - `OPENAI_API_KEY` —— 用于 AI 判定风险监控（可选；不配会退回词典兜底）
+   - `OPENAI_BASE_URL` —— OpenAI 兼容接口地址（可选；Mafia 平台填 `https://api.appintheloop.com/v1`）
+   - `RISK_MODEL` —— 风险判定模型（可选；Mafia 平台可填 `hy-4.1-mini` / `hy-4o-mini` 等）
 3. Actions → 启用 workflows
 4. 默认 `cron: "0 9 * * *"` = 每天 **17:00 Asia/Shanghai**
 
@@ -112,7 +114,7 @@ crontab -e
 - `main.py` 提供两种模式：常驻调度 (`python -m src.main`) 和跑一次就退出 (`--once`)，后者是为了方便挂到 launchd / cron / GitHub Actions
 - 每天 17:00 发送昨天自然日 00:00-24:00 的数据；Hailuo 主查询默认不设条数上限，并按 tweet ID 去重
 - Hailuo 和竞品查询默认均不设置条数上限，尽可能抓取固定时间窗口内的完整数据；高频词可能导致任务运行较久或触发 X 限流
-- 飞书会先发 Hailuo 主卡片：Views Top 5、所有命中帖子表格链接、Related 高频词云、热议话题 Top 3 和风险监控；风险监控配置 `OPENAI_API_KEY` 后由 AI 最终判定，竞品横向对比会在抓取完成后单独发第二张卡片
+- 飞书会先发 Hailuo 主卡片：Views Top 5、所有命中帖子表格链接、Related 高频词云、热议话题 Top 3 和风险监控；风险监控配置 `OPENAI_API_KEY` 后由 AI 最终判定，可用 `OPENAI_BASE_URL` 切到 Mafia / OpenAI 兼容接口，竞品横向对比会在抓取完成后单独发第二张卡片
 
 ## 常见问题
 

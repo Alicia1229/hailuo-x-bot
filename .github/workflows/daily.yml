@@ -6,6 +6,9 @@
 #   X_AUTH_TOKEN   (auth_token cookie)
 #   X_CT0          (ct0 cookie)
 #   X_USERNAME     (你的 X handle，不带 @)
+#   OPENAI_API_KEY (可选，用于 AI 风险判定)
+#   OPENAI_BASE_URL (可选，Mafia 平台填 https://api.appintheloop.com/v1)
+#   RISK_MODEL     (可选，Mafia 平台可填 hy-4.1-mini / hy-4o-mini 等)
 name: daily-x-report
 
 on:
@@ -34,7 +37,6 @@ jobs:
       MAX_HAILUO_TWEETS: "-1"
       MAX_PER_QUERY: "-1"
       PAGES_BASE_URL: "https://Alicia1229.github.io/hailuo-x-bot"
-      RISK_MODEL: "gpt-5-mini"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -52,6 +54,8 @@ jobs:
       - name: Prepare Hailuo report
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          RISK_MODEL: ${{ secrets.RISK_MODEL || 'gpt-5-mini' }}
         run: python -m src.main --once --prepare-only
       - name: Publish full report to GitHub Pages
         run: |

@@ -72,6 +72,7 @@ def _config() -> dict:
             "https://Alicia1229.github.io/hailuo-x-bot",
         ),
         "openai_api_key": os.environ.get("OPENAI_API_KEY") or None,
+        "openai_base_url": os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1",
         "risk_model": os.environ.get("RISK_MODEL", "gpt-5-mini"),
     }
 
@@ -295,6 +296,7 @@ def run_once(
             "risky_tweets": analyzer.compute_risks(
                 hailuo_tweets,
                 openai_api_key=cfg["openai_api_key"],
+                openai_base_url=cfg["openai_base_url"],
                 model=cfg["risk_model"],
             ),
         }
