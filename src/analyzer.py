@@ -595,16 +595,21 @@ def compute_sentiment_overview_by_dictionary(tweets: list[Tweet]) -> dict:
         "negative": [],
     }
     for tweet in tweets:
-        score = sentiment_score(tweet.text)
-        if score >= 0.75:
+        if _is_hailuo_price_advantage(tweet.text):
             label = "positive"
-        elif score <= -0.5:
-            label = "negative"
+            reason = "提到 Hailuo 折扣或价格优势"
         else:
-            label = "neutral"
+            score = sentiment_score(tweet.text)
+            if score >= 0.75:
+                label = "positive"
+            elif score <= -0.5:
+                label = "negative"
+            else:
+                label = "neutral"
+            reason = _extract_reason(tweet.text)
         buckets[label].append({
             "tweet": tweet,
-            "reason": _extract_reason(tweet.text),
+            "reason": reason,
         })
     return _build_sentiment_overview(buckets, total=len(tweets), source="dictionary")
 
@@ -645,9 +650,13 @@ def compute_sentiment_overview_ai(
             if tweet is None:
                 continue
             label = _normalize_sentiment_label(item.get("label"))
+            reason = str(item.get("reason") or "")[:120]
+            if _is_hailuo_price_advantage(tweet.text):
+                label = "positive"
+                reason = "提到 Hailuo 折扣或价格优势"
             buckets[label].append({
                 "tweet": tweet,
-                "reason": str(item.get("reason") or "")[:120],
+                "reason": reason,
             })
             seen_ids.add(tweet_id)
 
@@ -732,6 +741,8 @@ def _call_openai_sentiment_judge(
         "positive=明确称赞、推荐、展示满意结果、认可价格/能力；"
         "negative=明确抱怨、批评、退款/诈骗/失败/质量差/强烈负面竞品比较；"
         "neutral=教程、提示词、纯作品展示、新闻转述、普通提及、无法判断态度。"
+        "如果推文抱怨其他平台或竞品贵，同时说 Hailuo 更便宜、有折扣、50% off、"
+        "better rates、affordable、cheap、low price，这对 Hailuo 是 positive。"
         "不要把影视剧情或 prompt 里的 crash、chaos、dark 等词当负面。"
         "只输出 JSON，不要输出解释。"
     )
@@ -779,6 +790,21 @@ def _normalize_sentiment_label(value: object) -> str:
     return aliases.get(label, "neutral")
 
 
+def _is_hailuo_price_advantage(text: str) -> bool:
+    """识别“Hailuo 更便宜/有折扣/性价比高”这类正面价格优势。"""
+    text_lower = (text or "").lower()
+    if not any(marker in text_lower for marker in ("hailuo", "minimax video", "hailuo ai")):
+        return False
+    positive_price_markers = (
+        "50% off", "half off", "discount", "discounted", "sale",
+        "better rate", "better rates", "good rate", "good rates",
+        "cheap", "cheaper", "affordable", "low price", "lower price",
+        "low cost", "lower cost", "price low", "free credits",
+        "价格低", "低价", "便宜", "折扣", "优惠", "半价", "性价比", "免费额度",
+    )
+    return any(marker in text_lower for marker in positive_price_markers)
+
+
 def compute_risks(
     tweets: list[Tweet],
     threshold: float = -0.5,
@@ -804,6 +830,8 @@ def compute_risks_by_dictionary(tweets: list[Tweet], threshold: float = -0.5) ->
     """词典兜底：情感分 < threshold 的推文列为风险。"""
     flagged = []
     for t in tweets:
+        if _is_hailuo_price_advantage(t.text):
+            continue
         s = sentiment_score(t.text)
         if s <= threshold:
             flagged.append({
@@ -826,7 +854,7 @@ def compute_risks_ai(
     """用 OpenAI 模型判断真正的产品/品牌风险，避免剧情词误报。"""
     if not tweets:
         return []
-    by_id = {tweet.tweet_id: tweet for tweet in tweets}
+    by_id = {str(tweet.tweet_id): tweet for tweet in tweets}
     flagged: list[dict] = []
     for start in range(0, len(tweets), batch_size):
         batch = tweets[start:start + batch_size]
@@ -841,6 +869,8 @@ def compute_risks_ai(
             tweet_id = str(item.get("tweet_id", ""))
             tweet = by_id.get(tweet_id)
             if tweet is None or not item.get("is_risk"):
+                continue
+            if _is_hailuo_price_advantage(tweet.text):
                 continue
             severity = _clamp_int(item.get("severity", 1), 1, 3)
             reason = str(item.get("reason") or item.get("evidence") or tweet.text[:80])
@@ -875,6 +905,9 @@ def _call_openai_risk_judge(
         "只判断推文本身是否对 Hailuo、MiniMax、Hailuo AI、MiniMax Video 构成真实舆情风险。"
         "风险包括：产品 bug、崩溃、服务不可用、生成质量差、退款/诈骗、价格/额度抱怨、"
         "强烈负面竞品比较、公司/融资/股价/监管/商业化负面新闻。"
+        "只有针对 Hailuo 本身的价格贵、额度差、收费不满才算价格风险。"
+        "如果推文抱怨其他平台或竞品贵，同时说 Hailuo 有折扣、更便宜、50% off、"
+        "better rates、affordable、cheap、low price，这对 Hailuo 是正面，不是风险。"
         "不要把影视/游戏/创意 prompt 里的剧情词当风险，例如 crash、chaos、dead、infected、"
         "battle、disaster、dark、broken wall、waves crash 等只描述画面的词。"
         "正面作品分享、教程、提示词、普通竞品并列、剧情描述都不是风险。"
