@@ -6,12 +6,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Iterable
 
+import httpx
+
 from .scraper import Tweet
+
+log = logging.getLogger(__name__)
 
 # === 竞品词典 ============================================================
 # 同一厂商可能有很多别名（大小写、空格、连字符），统一映射到一个 key
@@ -96,6 +101,10 @@ NEGATIVE = {
     "骗": -2, "辣鸡": -2, "无语": -1, "难用": -1.5,
 }
 NEGATION = {"not", "no", "never", "没有", "不是", "不会", "别", "没", "无"}
+CREATIVE_CONTEXT = {
+    "cinematic", "prompt", "scene", "style", "vfx", "shot", "camera",
+    "city", "water", "wave", "waves", "car", "chase", "around",
+}
 
 RELATED_STOPWORDS = {
     "about", "after", "again", "also", "and", "are", "been", "before",
@@ -119,6 +128,8 @@ def sentiment_score(text: str) -> float:
     score = 0.0
     for i, tok in enumerate(tokens):
         if tok in NEGATIVE:
+            if _ignore_negative_in_context(tok, tokens, i):
+                continue
             weight = NEGATIVE[tok]   # 词表里已经是负值，直接取
         elif tok in POSITIVE:
             weight = POSITIVE[tok]
@@ -131,6 +142,16 @@ def sentiment_score(text: str) -> float:
         score += weight
     # 归一化：用出现次数做软裁剪
     return max(min(score, 3.0), -3.0)
+
+
+def _ignore_negative_in_context(tok: str, tokens: list[str], index: int) -> bool:
+    """过滤创意 prompt 里的剧情词，避免误当成产品风险。"""
+    if tok != "crash":
+        return False
+    local = set(tokens[max(0, index - 4):index + 5])
+    if not local.intersection({"wave", "waves", "water", "car", "chase", "around"}):
+        return False
+    return bool(set(tokens).intersection(CREATIVE_CONTEXT))
 
 
 # === 主分析函数 ==========================================================
@@ -389,8 +410,23 @@ def compute_topic_clusters(
     return clusters
 
 
-def compute_risks(tweets: list[Tweet], threshold: float = -0.5) -> list[dict]:
-    """情感分 < threshold 的推文列为风险，正面反向比较也列入。"""
+def compute_risks(
+    tweets: list[Tweet],
+    threshold: float = -0.5,
+    openai_api_key: str | None = None,
+    model: str = "gpt-5-mini",
+) -> list[dict]:
+    """风险监控：优先用 AI 判定，未配置或失败时退回词典规则。"""
+    if openai_api_key:
+        try:
+            return compute_risks_ai(tweets, openai_api_key=openai_api_key, model=model)
+        except Exception as exc:
+            log.warning("AI 风险判定失败，退回词典规则: %s", exc)
+    return compute_risks_by_dictionary(tweets, threshold=threshold)
+
+
+def compute_risks_by_dictionary(tweets: list[Tweet], threshold: float = -0.5) -> list[dict]:
+    """词典兜底：情感分 < threshold 的推文列为风险。"""
     flagged = []
     for t in tweets:
         s = sentiment_score(t.text)
@@ -403,6 +439,119 @@ def compute_risks(tweets: list[Tweet], threshold: float = -0.5) -> list[dict]:
     # 按情感分升序（最负面优先）
     flagged.sort(key=lambda x: x["score"])
     return flagged[:10]
+
+
+def compute_risks_ai(
+    tweets: list[Tweet],
+    openai_api_key: str,
+    model: str = "gpt-5-mini",
+    batch_size: int = 15,
+) -> list[dict]:
+    """用 OpenAI 模型判断真正的产品/品牌风险，避免剧情词误报。"""
+    if not tweets:
+        return []
+    by_id = {tweet.tweet_id: tweet for tweet in tweets}
+    flagged: list[dict] = []
+    for start in range(0, len(tweets), batch_size):
+        batch = tweets[start:start + batch_size]
+        payload = _build_risk_payload(batch)
+        response = _call_openai_risk_judge(
+            openai_api_key=openai_api_key,
+            model=model,
+            payload=payload,
+        )
+        for item in response.get("items", []):
+            tweet_id = str(item.get("tweet_id", ""))
+            tweet = by_id.get(tweet_id)
+            if tweet is None or not item.get("is_risk"):
+                continue
+            severity = _clamp_int(item.get("severity", 1), 1, 3)
+            reason = str(item.get("reason") or item.get("evidence") or tweet.text[:80])
+            flagged.append({
+                "tweet": tweet.to_dict(),
+                "score": -severity,
+                "reason": reason[:160],
+                "risk_type": str(item.get("risk_type") or "其他风险"),
+                "judge": "ai",
+            })
+    flagged.sort(key=lambda item: (item["score"], -item["tweet"].get("views", 0)))
+    return flagged[:10]
+
+
+def _build_risk_payload(tweets: list[Tweet]) -> list[dict]:
+    return [{
+        "tweet_id": tweet.tweet_id,
+        "author": tweet.author,
+        "views": tweet.views,
+        "text": tweet.text[:1200],
+    } for tweet in tweets]
+
+
+def _call_openai_risk_judge(
+    openai_api_key: str,
+    model: str,
+    payload: list[dict],
+) -> dict:
+    system_prompt = (
+        "你是 Hailuo / MiniMax Video 的品牌舆情风险分析员。"
+        "只判断推文本身是否对 Hailuo、MiniMax、Hailuo AI、MiniMax Video 构成真实舆情风险。"
+        "风险包括：产品 bug、崩溃、服务不可用、生成质量差、退款/诈骗、价格/额度抱怨、"
+        "强烈负面竞品比较、公司/融资/股价/监管/商业化负面新闻。"
+        "不要把影视/游戏/创意 prompt 里的剧情词当风险，例如 crash、chaos、dead、infected、"
+        "battle、disaster、dark、broken wall、waves crash 等只描述画面的词。"
+        "正面作品分享、教程、提示词、普通竞品并列、剧情描述都不是风险。"
+        "只输出 JSON，不要输出解释。"
+    )
+    user_prompt = (
+        "请逐条判断，返回格式："
+        '{"items":[{"tweet_id":"...","is_risk":true/false,'
+        '"severity":1-3,"risk_type":"...","reason":"中文短理由，<=60字","evidence":"原文依据，<=80字"}]}'
+        "\n推文：\n"
+        + json.dumps(payload, ensure_ascii=False)
+    )
+    with httpx.Client(timeout=60) as client:
+        response = client.post(
+            "https://api.openai.com/v1/responses",
+            headers={
+                "Authorization": f"Bearer {openai_api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "input": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "max_output_tokens": 2000,
+            },
+        )
+    response.raise_for_status()
+    return _parse_openai_json(response.json())
+
+
+def _parse_openai_json(body: dict) -> dict:
+    text = body.get("output_text")
+    if not text:
+        chunks = []
+        for output in body.get("output", []):
+            for content in output.get("content", []):
+                if content.get("type") in ("output_text", "text"):
+                    chunks.append(content.get("text", ""))
+        text = "\n".join(chunks)
+    if not text:
+        raise ValueError("OpenAI response missing output text")
+    match = re.search(r"\{.*\}", text, flags=re.S)
+    if not match:
+        raise ValueError("OpenAI response is not JSON")
+    return json.loads(match.group(0))
+
+
+def _clamp_int(value: object, low: int, high: int) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        n = low
+    return max(low, min(high, n))
 
 
 def _extract_reason(text: str) -> str:

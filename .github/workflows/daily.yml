@@ -34,6 +34,7 @@ jobs:
       MAX_HAILUO_TWEETS: "-1"
       MAX_PER_QUERY: "-1"
       PAGES_BASE_URL: "https://Alicia1229.github.io/hailuo-x-bot"
+      RISK_MODEL: "gpt-5-mini"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,6 +50,8 @@ jobs:
           X_CT0: ${{ secrets.X_CT0 }}
         run: python scripts/register_x_account.py
       - name: Prepare Hailuo report
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python -m src.main --once --prepare-only
       - name: Publish full report to GitHub Pages
         run: |
