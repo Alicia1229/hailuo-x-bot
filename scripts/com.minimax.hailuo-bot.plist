@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  macOS launchd：每天 19:00 跑一次 main.py。
+  macOS launchd：每天 17:00 跑一次 main.py。
   安装方法：
     1) cp scripts/com.minimax.hailuo-bot.plist ~/Library/LaunchAgents/
     2) 改下面 /Users/minimax/hailuo-x-bot 为你的实际路径
@@ -32,7 +32,7 @@
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key>
-        <integer>19</integer>
+        <integer>17</integer>
         <key>Minute</key>
         <integer>0</integer>
     </dict>

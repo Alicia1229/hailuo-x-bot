@@ -56,7 +56,8 @@ TOPIC_KEYWORDS: list[tuple[str, list[str]]] = [
     ("价格 / 订阅 / 政策",          [
         "价格", "订阅", "subscribe", "subscription", "plan",
         "credits", "credits", "积分", "收费", "免费", "free",
-        "pricing", "tier", "付费",
+        "pricing", "tier", "付费", "低价", "便宜", "cheap",
+        "affordable", "low price", "cost", "性价比",
     ]),
     ("BUG / 问题反馈 / 抱怨",        [
         "bug", "crash", "卡死", "卡顿", "崩溃", "退款",
@@ -201,47 +202,112 @@ def compute_related_terms(
 
 
 def compute_public_opinion(tweets: list[Tweet], limit: int = 3) -> list[dict]:
-    """选出影响力最高的舆情代表帖，优先覆盖不同作者。"""
+    """按讨论话题聚合舆情，而不是给代表帖打正/中/负标签。"""
+    topic_tweets: dict[str, dict[str, object]] = {}
+    for tweet in tweets:
+        text_lower = tweet.text.lower()
+        for topic_name, keywords in TOPIC_KEYWORDS:
+            matched = [
+                keyword
+                for keyword in keywords
+                if keyword.lower() in text_lower
+            ]
+            if not matched:
+                continue
+            bucket = topic_tweets.setdefault(
+                topic_name,
+                {
+                    "tweets": [],
+                    "terms": Counter(),
+                    "tweet_ids": set(),
+                },
+            )
+            tweet_ids = bucket["tweet_ids"]
+            if tweet.tweet_id in tweet_ids:
+                continue
+            bucket["tweets"].append(tweet)
+            tweet_ids.add(tweet.tweet_id)
+            bucket["terms"].update(matched)
+
+    if not topic_tweets:
+        return _fallback_public_opinion(tweets, limit)
+
+    items = []
+    for topic_name, bucket in topic_tweets.items():
+        topic_items = bucket["tweets"]
+        topic_items.sort(key=lambda tweet: (tweet.views, tweet.engagement()), reverse=True)
+        terms = [
+            term
+            for term, _count in bucket["terms"].most_common(5)
+        ]
+        count = len(topic_items)
+        views = sum(tweet.views for tweet in topic_items)
+        engagement = sum(tweet.engagement() for tweet in topic_items)
+        items.append({
+            "topic": topic_name,
+            "summary": _summarize_topic(topic_name, terms),
+            "count": count,
+            "pct": round(count / max(len(tweets), 1) * 100, 1),
+            "views": views,
+            "engagement": engagement,
+            "keywords": terms,
+            "tweet": topic_items[0].to_dict(),
+        })
+
+    items.sort(
+        key=lambda item: (item["count"], item["engagement"], item["views"]),
+        reverse=True,
+    )
+    return items[:limit]
+
+
+def _summarize_topic(topic_name: str, terms: list[str]) -> str:
+    """把内部话题名压成飞书卡片上更像“人在聊什么”的短句。"""
+    term_text = " ".join(term.lower() for term in terms)
+    if topic_name == "价格 / 订阅 / 政策":
+        if any(
+            marker in term_text
+            for marker in ("免费", "free", "低价", "便宜", "cheap", "affordable", "性价比")
+        ):
+            return "价格低 / 免费额度"
+        return "价格、订阅与额度"
+    if topic_name == "产品体验 / 画面质量":
+        return "画质与生成效果"
+    if topic_name == "与竞品对比评测":
+        return "和竞品对比"
+    if topic_name == "教程 / 提示词技巧":
+        return "教程与提示词玩法"
+    if topic_name == "作品 / 创意分享":
+        return "作品与创意案例"
+    if topic_name == "商业应用 / 客户案例":
+        return "商业应用场景"
+    if topic_name == "BUG / 问题反馈 / 抱怨":
+        return "问题反馈与抱怨"
+    if topic_name == "新功能 / 版本更新":
+        return "新功能与版本更新"
+    return topic_name
+
+
+def _fallback_public_opinion(tweets: list[Tweet], limit: int) -> list[dict]:
+    """话题词典没命中时，退回到高互动代表帖，但不打情感标签。"""
     ranked = sorted(
         tweets,
         key=lambda tweet: (tweet.engagement(), tweet.views),
         reverse=True,
     )
-    selected: list[Tweet] = []
-    selected_ids: set[str] = set()
-    authors: set[str] = set()
-
-    for tweet in ranked:
-        if tweet.author in authors:
-            continue
-        selected.append(tweet)
-        selected_ids.add(tweet.tweet_id)
-        authors.add(tweet.author)
-        if len(selected) >= limit:
-            break
-    if len(selected) < limit:
-        for tweet in ranked:
-            if tweet.tweet_id in selected_ids:
-                continue
-            selected.append(tweet)
-            if len(selected) >= limit:
-                break
-
-    items = []
-    for tweet in selected:
-        score = sentiment_score(tweet.text)
-        if score >= 0.5:
-            sentiment = "正面"
-        elif score <= -0.5:
-            sentiment = "负面"
-        else:
-            sentiment = "中性"
-        items.append({
+    return [
+        {
+            "topic": "高互动讨论",
+            "summary": "高互动讨论",
+            "count": 1,
+            "pct": round(1 / max(len(tweets), 1) * 100, 1),
+            "views": tweet.views,
+            "engagement": tweet.engagement(),
+            "keywords": [],
             "tweet": tweet.to_dict(),
-            "sentiment": sentiment,
-            "score": round(score, 2),
-        })
-    return items
+        }
+        for tweet in ranked[:limit]
+    ]
 
 
 def build_competitor_table(

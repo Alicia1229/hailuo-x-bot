@@ -1,6 +1,6 @@
 # Hailuo X Daily Bot
 
-每天 19:00（Asia/Shanghai）抓 X 上过去 24 小时里提到过
+每天 17:00（Asia/Shanghai）抓 X 上昨天自然日 00:00-24:00 里提到过
 `hailuo03, hailuo3, hailuo, hailuoai, MiniMax Video, MiniMax H3` 的推文，
 按 views 降序排好，发到飞书群里。
 
@@ -62,11 +62,11 @@ python -c "from src import feishu; print(feishu.send('$FEISHU_WEBHOOK_URL', feis
 python -m src.main --once
 ```
 
-跑完去飞书对应群看一眼，应该会收到一条 "过去 24h 命中 N 条" 的卡片。
+跑完去飞书对应群看一眼，应该会收到一条昨天自然日窗口的日报卡片。
 
 ## 第四步：上调度（选一个）
 
-### 方案 A：macOS launchd（推荐，只要电脑在 19:00 左右开着）
+### 方案 A：macOS launchd（推荐，只要电脑在 17:00 左右开着）
 
 ```bash
 bash scripts/install_launchd.sh
@@ -75,7 +75,7 @@ bash scripts/install_launchd.sh
 这条命令会：
 - 把 plist 拷到 `~/Library/LaunchAgents/`
 - 把脚本里的项目路径替换成你的实际路径
-- `launchctl load` 一下，每晚 19:00 自动跑
+- `launchctl load` 一下，每晚 17:00 自动跑
 
 **卸载**：`launchctl unload ~/Library/LaunchAgents/com.minimax.hailuo-bot.plist`
 
@@ -101,7 +101,7 @@ bash scripts/install_launchd.sh
 ```bash
 crontab -e
 # 加上这一行：
-0 19 * * * cd /Users/minimax/hailuo-x-bot && .venv/bin/python -m src.main --once >> logs/cron.log 2>&1
+0 17 * * * cd /Users/minimax/hailuo-x-bot && .venv/bin/python -m src.main --once >> logs/cron.log 2>&1
 ```
 
 ## 工作原理（30 秒版）
@@ -109,14 +109,14 @@ crontab -e
 - `scraper.py` 用 [twscrape](https://github.com/vladkens/twscrape) 调 X 前端 GraphQL，不需要付费 API key，但需要你提供至少一个登录态（auth_token + ct0）来证明身份
 - `feishu.py` 把结果打包成飞书 schema 2.0 的卡片（每条推文一行含 views/❤️/🔁/💬，下面挂一个"打开推文"按钮跳原推）
 - `main.py` 提供两种模式：常驻调度 (`python -m src.main`) 和跑一次就退出 (`--once`)，后者是为了方便挂到 launchd / cron / GitHub Actions
-- 所有查询共用固定的每天 19:00 截止窗口；Hailuo 主查询默认不设条数上限，并按 tweet ID 去重
+- 每天 17:00 发送昨天自然日 00:00-24:00 的数据；Hailuo 主查询默认不设条数上限，并按 tweet ID 去重
 - Hailuo 和竞品查询默认均不设置条数上限，尽可能抓取固定时间窗口内的完整数据；高频词可能导致任务运行较久或触发 X 限流
-- 飞书卡片展示 Views Top 5、竞品横向数据、Related 高频词云、舆情 Top 3 和风险监控；不再抓评论做竞品共现，也不再展示话题聚类
+- 飞书会先发 Hailuo 主卡片：Views Top 5、所有命中帖子表格链接、Related 高频词云、热议话题 Top 3 和风险监控；竞品横向对比会在抓取完成后单独发第二张卡片
 
 ## 常见问题
 
 **Q: 飞书推送的 20KB 限制**  
-A: 卡片只展示 Views Top 5 和三个舆情代表帖，完整推文通过卡片底部的 GitHub Pages 链接查看。
+A: Hailuo 主卡片只展示 Views Top 5 和三个热议话题代表帖，所有命中帖子通过 Top 5 后面的 GitHub Pages 表格链接查看；竞品数据单独一张卡片发送。
 
 **Q: 我想换关键词**  
 A: 改 `.env` 里 `KEYWORDS=hailuo,hailuoai,MiniMax`，逗号分隔。

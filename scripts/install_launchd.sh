@@ -51,11 +51,11 @@ launchctl unload "$DST" 2>/dev/null || true
 launchctl load "$DST"
 launchctl start com.minimax.hailuo-bot
 
-# 如果 plist 的 PUSH_HOUR/PUSH_MINUTE（plist 写死 19:00）跟 .env 不一致
+# 如果 plist 的 PUSH_HOUR/PUSH_MINUTE（plist 写死 17:00）跟 .env 不一致
 # 提醒一下用户
 ENV_PUSH_HOUR="$(grep -E '^PUSH_HOUR=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d= -f2 || true)"
-if [ -n "$ENV_PUSH_HOUR" ] && [ "$ENV_PUSH_HOUR" != "19" ]; then
-    echo "⚠️  .env 里 PUSH_HOUR=$ENV_PUSH_HOUR，但 plist 写死了 19:00。修改跑点请改 plist。"
+if [ -n "$ENV_PUSH_HOUR" ] && [ "$ENV_PUSH_HOUR" != "17" ]; then
+    echo "⚠️  .env 里 PUSH_HOUR=$ENV_PUSH_HOUR，但 plist 写死了 17:00。修改跑点请改 plist。"
 fi
 
 echo "✅ 已安装。要立刻跑一次测试："

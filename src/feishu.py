@@ -3,10 +3,12 @@
 按日报结构分块渲染：
   1) 摘要（条数 / 总 views / 总 engagement）
   2) views 前 5 推文
-  3) 竞品横向对比表
+  3) 所有命中帖子表格链接
   4) Related 高频词云
-  5) 舆情 Top 3
+  5) 热议话题 Top 3
   6) 风险监控
+
+竞品横向对比单独发送一张卡片，避免竞品抓取拖慢主报告。
 
 注意：飞书 schema 2.0 已不再支持 `tag: action` 按钮，这里所有跳转都用
 markdown 内嵌链接 `[文本](url)`。
@@ -123,6 +125,23 @@ def render_top_tweets(tweets: list[dict], cap: int = 5) -> list[dict]:
     return elements
 
 
+def render_all_tweets_link(total: int, full_report_url: str | None) -> list[dict]:
+    """渲染完整命中帖子表格入口。"""
+    if not full_report_url or total <= 0:
+        return []
+    return [{
+        "tag": "div",
+        "text": {
+            "tag": "lark_md",
+            "content": (
+                f"📋 **所有命中帖子表格**\n"
+                f"共 **{total}** 条，可搜索 / 排序 / 过滤："
+                f"[打开完整表格]({full_report_url})"
+            ),
+        },
+    }, {"tag": "hr"}]
+
+
 def render_competitor_table(rows: list[dict], lookback_hours: int = 24) -> list[dict]:
     if not rows:
         return [{"tag": "div", "text": {"tag": "lark_md", "content": "_竞品对比数据暂缺_"}}]
@@ -162,23 +181,29 @@ def render_public_opinion(items: list[dict]) -> list[dict]:
     if not items:
         return [{
             "tag": "div",
-            "text": {"tag": "lark_md", "content": "**📣 舆情 Top 3**\n_暂无舆情数据_"},
+            "text": {"tag": "lark_md", "content": "**📣 热议话题 Top 3**\n_暂无足够话题数据_"},
         }, {"tag": "hr"}]
-    sentiment_icons = {"正面": "🟢", "中性": "⚪", "负面": "🔴"}
     elements = [{
         "tag": "div",
-        "text": {"tag": "lark_md", "content": "**📣 舆情 Top 3**"},
+        "text": {"tag": "lark_md", "content": "**📣 热议话题 Top 3**"},
     }]
     for index, item in enumerate(items[:3], 1):
         tweet = item["tweet"]
-        sentiment = item.get("sentiment", "中性")
+        keywords = item.get("keywords", [])
+        keyword_text = "　·　".join(_safe_md_text(term) for term in keywords[:5])
+        keyword_line = f"关键词：{keyword_text}\n" if keyword_text else ""
         engagement = sum(
             tweet.get(key, 0)
             for key in ("likes", "retweets", "replies", "quotes")
         )
         content = (
-            f"**{index}. {sentiment_icons.get(sentiment, '⚪')} {sentiment} · "
-            f"[{tweet['author']}]({tweet['author_url']})**\n"
+            f"**{index}. {_safe_md_text(item.get('summary') or item.get('topic', '其他讨论'))}**\n"
+            f"讨论 **{item.get('count', 0)}** 条"
+            f"（{item.get('pct', 0)}%） · "
+            f"总 views **{_fmt(item.get('views', 0))}** · "
+            f"总互动 **{_fmt(item.get('engagement', engagement))}**\n"
+            f"{keyword_line}"
+            f"代表帖：[{tweet['author']}]({tweet['author_url']}) · "
             f"👁 {_fmt(tweet.get('views', 0))} · 互动 {_fmt(engagement)}\n"
             f"{_truncate(_safe_md_text(tweet.get('text', '')), 180)}\n"
             f"🔗 [打开推文]({tweet['url']})"
@@ -254,27 +279,10 @@ def build_card(
         }, {"tag": "hr"}])
     body_elements.extend(render_summary(report))
     body_elements.extend(render_top_tweets(report.get("top_tweets", [])))
-    body_elements.extend(render_competitor_table(
-        report.get("competitor_table", []),
-        lookback_hours=lookback_hours,
-    ))
+    body_elements.extend(render_all_tweets_link(total, full_report_url))
     body_elements.extend(render_related_terms(report.get("related_terms", [])))
     body_elements.extend(render_public_opinion(report.get("public_opinion", [])))
     body_elements.extend(render_risks(report.get("risky_tweets", [])))
-
-    # 完整报告链接(部署在 GitHub Pages)
-    if full_report_url and total > 0:
-        body_elements.append({"tag": "hr"})
-        body_elements.append({
-            "tag": "div",
-            "text": {
-                "tag": "lark_md",
-                "content": (
-                    f"📊 **查看完整 {total} 条推文(可搜索/排序/过滤)**\n"
-                    f"[👉 打开完整报告]({full_report_url})"
-                ),
-            },
-        })
 
     return {
         "msg_type": "interactive",
@@ -283,6 +291,47 @@ def build_card(
             "header": {
                 "title": {"tag": "plain_text", "content": header_title},
                 "template": template,
+            },
+            "body": {
+                "direction": "vertical",
+                "elements": body_elements,
+            },
+        },
+    }
+
+
+def build_competitor_card(report: dict, lookback_hours: int = 24) -> dict:
+    """单独的竞品横向对比卡片。"""
+    report_date = str(report.get("meta", {}).get("report_date", ""))
+    if len(report_date) == 8 and report_date.isdigit():
+        date_text = (
+            f"{int(report_date[:4])}.{int(report_date[4:6])}.{int(report_date[6:8])}"
+        )
+    else:
+        date_text = "日期未知"
+
+    rows = report.get("competitor_table", [])
+    body_elements: list[dict] = []
+    warnings = report.get("data_quality", {}).get("warnings", [])
+    if warnings:
+        warning_lines = ["**⚠️ 竞品数据可能不完整**"]
+        warning_lines.extend(f"- {_safe_md_text(item)}" for item in warnings)
+        body_elements.extend([{
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": "\n".join(warning_lines)},
+        }, {"tag": "hr"}])
+    body_elements.extend(render_competitor_table(rows, lookback_hours=lookback_hours))
+
+    return {
+        "msg_type": "interactive",
+        "card": {
+            "schema": "2.0",
+            "header": {
+                "title": {
+                    "tag": "plain_text",
+                    "content": f"Hailuo X 竞品横向对比 · {date_text} · {lookback_hours}h",
+                },
+                "template": "blue" if rows else "grey",
             },
             "body": {
                 "direction": "vertical",
@@ -324,7 +373,7 @@ if __name__ == "__main__":
         ],
         "competitor_table": [{"name": "Kling", "count": 12, "views": 80000, "engagement": 1500}],
         "related_terms": [{"term": "cinematic", "count": 12}, {"term": "Kling", "count": 8}],
-        "public_opinion": [{"tweet": {"tweet_id":"e1","url":"https://x.com/x/status/9","author":"@x","author_url":"https://x.com/x","text":"hailuo quality is amazing","created_at":"2026-07-07T00:00:00+00:00","views":5000,"likes":100,"retweets":10,"replies":3,"quotes":0}, "sentiment": "正面", "score": 2.0}],
+        "public_opinion": [{"topic": "产品体验 / 画面质量", "summary": "画质与生成效果", "count": 12, "pct": 27.9, "views": 50000, "engagement": 1200, "keywords": ["quality", "画质"], "tweet": {"tweet_id":"e1","url":"https://x.com/x/status/9","author":"@x","author_url":"https://x.com/x","text":"hailuo quality is amazing","created_at":"2026-07-07T00:00:00+00:00","views":5000,"likes":100,"retweets":10,"replies":3,"quotes":0}}],
         "risky_tweets": [],
     }
     print(json.dumps(build_card(fake_report), ensure_ascii=False, indent=2)[:1200])

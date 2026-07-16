@@ -1,7 +1,7 @@
 # crontab -e 后追加这一行（记得把 PROJECT_DIR 换成实际路径）：
 #
-# 每天 19:00 跑一次；用 --once 模式
-# 0 19 * * * /bin/bash -lc 'cd /Users/minimax/hailuo-x-bot && /usr/local/bin/python3 -m src.main --once >> logs/cron.log 2>&1'
+# 每天 17:00 跑一次；用 --once 模式
+# 0 17 * * * /bin/bash -lc 'cd /Users/minimax/hailuo-x-bot && /usr/local/bin/python3 -m src.main --once >> logs/cron.log 2>&1'
 #
 # 注意：cron 不会加载你的 shell 环境（.zshrc 等），所以要么把 KEYWORDS 等写进 .env，
 # 要么把变量写在这行前面：

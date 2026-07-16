@@ -48,7 +48,7 @@ jobs:
           X_AUTH_TOKEN: ${{ secrets.X_AUTH_TOKEN }}
           X_CT0: ${{ secrets.X_CT0 }}
         run: python scripts/register_x_account.py
-      - name: Prepare report
+      - name: Prepare Hailuo report
         run: python -m src.main --once --prepare-only
       - name: Publish full report to GitHub Pages
         run: |
@@ -65,11 +65,16 @@ jobs:
           fi
       - name: Wait for GitHub Pages
         run: python scripts/wait_for_report.py cache/latest_report_path.txt
-      - name: Send Feishu card
+      - name: Send Hailuo Feishu card
         env:
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
         run: python -m src.main --send-report cache/latest_report_path.txt
+      - name: Send competitor Feishu card
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
+        run: python -m src.main --send-competitor-report cache/latest_report_path.txt
       - name: Notify workflow failure
         if: ${{ failure() }}
         env:

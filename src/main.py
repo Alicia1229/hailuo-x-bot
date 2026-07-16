@@ -61,7 +61,7 @@ def _config() -> dict:
             "Seedance,Dreamina,Kling,Vidu,Pika,Runway,Happy Horse,Higgsfield",
         ).split(",") if k.strip()],
         "tz": os.environ.get("TZ", "Asia/Shanghai"),
-        "push_hour": int(os.environ.get("PUSH_HOUR", 19)),
+        "push_hour": int(os.environ.get("PUSH_HOUR", 17)),
         "push_minute": int(os.environ.get("PUSH_MINUTE", 0)),
         "accounts_db": os.environ.get("X_ACCOUNTS_DB", "accounts.db"),
         "lookback_hours": int(os.environ.get("LOOKBACK_HOURS", 24)),
@@ -82,18 +82,21 @@ def _full_report_url(pages_base: str, report_time: datetime) -> str:
     return f"{pages_base.rstrip('/')}/reports/{report_time:%Y%m%d}.html"
 
 
-def _scheduled_window_end(cfg: dict, now: datetime | None = None) -> datetime:
+def _previous_calendar_day_window(
+    cfg: dict,
+    now: datetime | None = None,
+) -> tuple[datetime, datetime]:
+    """返回昨天自然日窗口：[昨天 00:00, 今天 00:00)。"""
     tz = ZoneInfo(cfg["tz"])
     current = now.astimezone(tz) if now else datetime.now(tz)
-    candidate = current.replace(
-        hour=cfg["push_hour"],
-        minute=cfg["push_minute"],
+    window_end = current.replace(
+        hour=0,
+        minute=0,
         second=0,
         microsecond=0,
     )
-    if current < candidate:
-        candidate -= timedelta(days=1)
-    return candidate
+    window_start = window_end - timedelta(days=1)
+    return window_start, window_end
 
 
 def _add_quality_warning(data_quality: dict, message: str) -> None:
@@ -149,6 +152,14 @@ def _build_card(report: dict, include_full_report_link: bool = True) -> dict:
     return card
 
 
+def _build_competitor_card(report: dict) -> dict:
+    meta = report.get("meta", {})
+    return feishu.build_competitor_card(
+        report,
+        lookback_hours=meta.get("lookback_hours", 24),
+    )
+
+
 def _send_report(
     cfg: dict,
     report: dict,
@@ -159,6 +170,16 @@ def _send_report(
     feishu.send(
         cfg["feishu_webhook"],
         _build_card(report, include_full_report_link=include_full_report_link),
+        secret=cfg["feishu_secret"],
+    )
+
+
+def _send_competitor_report(cfg: dict, report: dict) -> None:
+    if not cfg["feishu_webhook"]:
+        raise ValueError("FEISHU_WEBHOOK_URL 未配置")
+    feishu.send(
+        cfg["feishu_webhook"],
+        _build_competitor_card(report),
         secret=cfg["feishu_secret"],
     )
 
@@ -178,6 +199,38 @@ def _notify_failure(cfg: dict, error: BaseException) -> None:
         log.error("失败通知也没发出去: %s", traceback.format_exc())
 
 
+def _fetch_competitor_results(
+    cfg: dict,
+    window_hours: int,
+    window_end: datetime,
+    data_quality: dict,
+) -> dict[str, list]:
+    log.info("抓竞品（自然日窗口 %dh）— %s", window_hours, cfg["competitors"])
+    competitor_results: dict = {}
+    for name in cfg["competitors"]:
+        try:
+            tweets = fetch_for_query_sync(
+                query=_q(name),
+                since_hours=window_hours,
+                max=cfg["max_per_query"],
+                db_path=cfg["accounts_db"],
+                window_end=window_end,
+            )
+            competitor_results[name] = tweets
+            if cfg["max_per_query"] > 0 and len(tweets) >= cfg["max_per_query"]:
+                _add_quality_warning(
+                    data_quality,
+                    f"竞品 {name} 达到抓取上限 {cfg['max_per_query']}，统计可能被截断",
+                )
+        except Exception as exc:
+            competitor_results[name] = []
+            _add_quality_warning(
+                data_quality,
+                f"竞品 {name} 抓取失败（{type(exc).__name__}）",
+            )
+    return competitor_results
+
+
 def run_once(
     cfg: dict,
     send_report: bool = True,
@@ -186,16 +239,21 @@ def run_once(
     log.info("==== 单次任务开始 ====")
     started_at = time.time()
     try:
-        window_end = _scheduled_window_end(cfg)
-        window_start = window_end - timedelta(hours=cfg["lookback_hours"])
+        window_start, window_end = _previous_calendar_day_window(cfg)
+        report_day = window_start
+        window_hours = int((window_end - window_start).total_seconds() // 3600)
         data_quality = {"complete": True, "warnings": []}
-        log.info("固定数据窗口: %s ~ %s", window_start.isoformat(), window_end.isoformat())
+        log.info(
+            "固定自然日数据窗口: %s ~ %s",
+            window_start.isoformat(),
+            window_end.isoformat(),
+        )
 
         hailuo_query = " OR ".join(_q(keyword) for keyword in cfg["keywords"])
         log.info("step1: 抓 hailuo 关键词")
         hailuo_tweets = fetch_for_query_sync(
             query=hailuo_query,
-            since_hours=cfg["lookback_hours"],
+            since_hours=window_hours,
             max=cfg["max_hailuo_tweets"],
             db_path=cfg["accounts_db"],
             window_end=window_end,
@@ -208,49 +266,25 @@ def run_once(
         if not hailuo_tweets:
             _add_quality_warning(data_quality, "Hailuo 主查询返回 0 条，请复核 X 登录态和搜索可用性")
 
-        log.info("step2: 抓竞品（统一窗口 %dh）— %s", cfg["lookback_hours"], cfg["competitors"])
-        competitor_results: dict = {}
-        for name in cfg["competitors"]:
-            try:
-                tweets = fetch_for_query_sync(
-                    query=_q(name),
-                    since_hours=cfg["lookback_hours"],
-                    max=cfg["max_per_query"],
-                    db_path=cfg["accounts_db"],
-                    window_end=window_end,
-                )
-                competitor_results[name] = tweets
-                if cfg["max_per_query"] > 0 and len(tweets) >= cfg["max_per_query"]:
-                    _add_quality_warning(
-                        data_quality,
-                        f"竞品 {name} 达到抓取上限 {cfg['max_per_query']}，统计可能被截断",
-                    )
-            except Exception as exc:
-                competitor_results[name] = []
-                _add_quality_warning(
-                    data_quality,
-                    f"竞品 {name} 抓取失败（{type(exc).__name__}）",
-                )
-
-        log.info("step3: 分析聚合")
-        full_report_url = _full_report_url(cfg["pages_base_url"], window_end)
+        log.info("step2: 分析 Hailuo 主报告")
+        full_report_url = _full_report_url(cfg["pages_base_url"], report_day)
         generated_at = datetime.now(ZoneInfo(cfg["tz"]))
-        report_id = f"report_{window_end:%Y%m%d}_{generated_at:%Y%m%dT%H%M%S}"
+        report_id = f"report_{report_day:%Y%m%d}_{generated_at:%Y%m%dT%H%M%S}"
         report = {
             "meta": {
                 "report_id": report_id,
-                "report_date": window_end.strftime("%Y%m%d"),
+                "report_date": report_day.strftime("%Y%m%d"),
                 "generated_at": generated_at.isoformat(),
                 "window_start": window_start.isoformat(),
                 "window_end": window_end.isoformat(),
-                "lookback_hours": cfg["lookback_hours"],
+                "lookback_hours": window_hours,
                 "full_report_url": full_report_url,
             },
             "data_quality": data_quality,
-            "summary": analyzer.compute_summary(hailuo_tweets, cfg["lookback_hours"]),
+            "summary": analyzer.compute_summary(hailuo_tweets, window_hours),
             "top_tweets": [tweet.to_dict() for tweet in hailuo_tweets[:5]],
             "all_tweets": [tweet.to_dict() for tweet in hailuo_tweets],
-            "competitor_table": analyzer.build_competitor_table(competitor_results),
+            "competitor_table": [],
             "related_terms": analyzer.compute_related_terms(
                 hailuo_tweets,
                 excluded_terms=cfg["keywords"],
@@ -260,13 +294,27 @@ def run_once(
         }
 
         report_file = _write_report(report)
-        log.info("step4: 渲染完整报告 HTML")
+        log.info("step3: 渲染完整报告 HTML")
         _render_report(report_file)
 
         if send_report:
-            log.info("step5: 发飞书")
+            log.info("step4: 发 Hailuo 主卡片")
             # 本地/launchd 运行只生成 HTML，并不会自动发布到 GitHub Pages。
             _send_report(cfg, report, include_full_report_link=False)
+            log.info("step5: 抓竞品并单独发卡片")
+            competitor_quality = {"complete": True, "warnings": []}
+            competitor_results = _fetch_competitor_results(
+                cfg,
+                window_hours=window_hours,
+                window_end=window_end,
+                data_quality=competitor_quality,
+            )
+            competitor_report = {
+                "meta": report["meta"],
+                "data_quality": competitor_quality,
+                "competitor_table": analyzer.build_competitor_table(competitor_results),
+            }
+            _send_competitor_report(cfg, competitor_report)
 
         log.info(
             "==== 完成，耗时 %.1fs；共 %d 条 hailuo 推文；完整报告 %s ====",
@@ -288,6 +336,29 @@ def send_saved_report(cfg: dict, report_path: Path) -> None:
     report = json.loads(report_path.read_text(encoding="utf-8"))
     _send_report(cfg, report)
     log.info("已发送已发布报告: %s", report_path)
+
+
+def send_competitor_report(cfg: dict, report_path: Path) -> None:
+    if report_path.suffix == ".txt":
+        report_path = Path(report_path.read_text(encoding="utf-8").strip())
+    base_report = json.loads(report_path.read_text(encoding="utf-8"))
+    meta = base_report.get("meta", {})
+    window_end = datetime.fromisoformat(meta["window_end"])
+    window_hours = meta.get("lookback_hours", 24)
+    data_quality = {"complete": True, "warnings": []}
+    competitor_results = _fetch_competitor_results(
+        cfg,
+        window_hours=window_hours,
+        window_end=window_end,
+        data_quality=data_quality,
+    )
+    report = {
+        "meta": meta,
+        "data_quality": data_quality,
+        "competitor_table": analyzer.build_competitor_table(competitor_results),
+    }
+    _send_competitor_report(cfg, report)
+    log.info("已发送竞品横向对比卡片: %s", report_path)
 
 
 def run_scheduler(cfg: dict) -> None:
@@ -316,15 +387,18 @@ def main() -> None:
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--send-report", type=Path)
+    parser.add_argument("--send-competitor-report", type=Path)
     args = parser.parse_args()
 
     if args.prepare_only and not args.once:
         parser.error("--prepare-only 必须与 --once 一起使用")
-    if args.send_report and (args.once or args.prepare_only):
-        parser.error("--send-report 不能与 --once/--prepare-only 同时使用")
+    if args.send_report and (args.once or args.prepare_only or args.send_competitor_report):
+        parser.error("--send-report 不能与 --once/--prepare-only/--send-competitor-report 同时使用")
+    if args.send_competitor_report and (args.once or args.prepare_only):
+        parser.error("--send-competitor-report 不能与 --once/--prepare-only 同时使用")
 
     required_keys = []
-    if args.send_report:
+    if args.send_report or args.send_competitor_report:
         required_keys.append("FEISHU_WEBHOOK_URL")
     else:
         required_keys.append("KEYWORDS")
@@ -337,6 +411,8 @@ def main() -> None:
     cfg = _config()
     if args.send_report:
         send_saved_report(cfg, args.send_report)
+    elif args.send_competitor_report:
+        send_competitor_report(cfg, args.send_competitor_report)
     elif args.once:
         run_once(
             cfg,
