@@ -298,6 +298,12 @@ def run_once(
                 openai_base_url=cfg["openai_base_url"],
                 model=cfg["risk_model"],
             ),
+            "sentiment_overview": analyzer.compute_sentiment_overview(
+                hailuo_tweets,
+                openai_api_key=cfg["openai_api_key"],
+                openai_base_url=cfg["openai_base_url"],
+                model=cfg["risk_model"],
+            ),
             "risky_tweets": analyzer.compute_risks(
                 hailuo_tweets,
                 openai_api_key=cfg["openai_api_key"],

@@ -53,6 +53,7 @@ full_dump = {
     "competitor_table": [],
     "related_terms": analyzer.compute_related_terms(tweets, excluded_terms=KEYWORDS),
     "public_opinion": analyzer.compute_public_opinion(tweets),
+    "sentiment_overview": analyzer.compute_sentiment_overview(tweets),
     "risky_tweets": [],
 }
 from datetime import datetime as _dt

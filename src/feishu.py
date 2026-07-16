@@ -5,8 +5,9 @@
   2) views 前 5 推文
   3) 所有命中帖子表格链接
   4) Related 高频词云
-  5) 热议话题 Top 3
-  6) 风险监控
+  5) 舆情正/中/负占比
+  6) 热议话题 Top 3
+  7) 风险监控
 
 竞品横向对比单独发送一张卡片，避免竞品抓取拖慢主报告。
 
@@ -216,6 +217,47 @@ def render_public_opinion(items: list[dict]) -> list[dict]:
     return elements
 
 
+def render_sentiment_overview(overview: dict | None) -> list[dict]:
+    if not overview or not overview.get("items"):
+        return [{
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": "**🧭 舆情正负面占比**\n_暂无足够舆情数据_"},
+        }, {"tag": "hr"}]
+
+    lines = [
+        "**🧭 舆情正负面占比**",
+        "| 类型 | 数量 | 占比 | 代表帖 |",
+        "| --- | ---: | ---: | --- |",
+    ]
+    for item in overview.get("items", []):
+        examples = item.get("examples", [])
+        if examples:
+            example = examples[0]
+            example_text = (
+                f"[{example.get('author', '')}]({example.get('author_url', '')}) · "
+                f"👁 {_fmt(example.get('views', 0))} · "
+                f"[打开]({example.get('url', '')})"
+            )
+        else:
+            example_text = "-"
+        lines.append(
+            f"| **{_safe_md_text(item.get('name', item.get('label', '')))}** "
+            f"| {item.get('count', 0)} "
+            f"| {item.get('pct', 0)}% "
+            f"| {example_text} |"
+        )
+
+    source = overview.get("source")
+    if source == "ai":
+        lines.append("\n<font color='grey'>判定方式：AI 逐条判断对 Hailuo / MiniMax Video 的态度。</font>")
+    else:
+        lines.append("\n<font color='grey'>判定方式：AI 不可用时使用词典兜底，仅供参考。</font>")
+    return [{
+        "tag": "div",
+        "text": {"tag": "lark_md", "content": "\n".join(lines)},
+    }, {"tag": "hr"}]
+
+
 def render_risks(risks: list[dict]) -> list[dict]:
     if not risks:
         return [{
@@ -238,7 +280,7 @@ def render_risks(risks: list[dict]) -> list[dict]:
     }, {"tag": "hr"}, {
         "tag": "div",
         "text": {"tag": "lark_md",
-                 "content": "<font color='grey'>判定规则：基于中英双语情感词典 + 否定处理，仅供参考，建议人工复核。</font>"},
+                 "content": "<font color='grey'>判定规则：优先由 AI 判断真实产品/品牌风险；AI 不可用时使用词典兜底。</font>"},
     }]
     return elements
 
@@ -281,6 +323,7 @@ def build_card(
     body_elements.extend(render_top_tweets(report.get("top_tweets", [])))
     body_elements.extend(render_all_tweets_link(total, full_report_url))
     body_elements.extend(render_related_terms(report.get("related_terms", [])))
+    body_elements.extend(render_sentiment_overview(report.get("sentiment_overview")))
     body_elements.extend(render_public_opinion(report.get("public_opinion", [])))
     body_elements.extend(render_risks(report.get("risky_tweets", [])))
 

@@ -163,6 +163,7 @@ class Report:
     competitor_table: list[dict]
     related_terms: list[dict]
     public_opinion: list[dict]
+    sentiment_overview: dict
     risky_tweets: list[dict]
     raw: dict = field(default_factory=dict)
 
@@ -565,6 +566,217 @@ def compute_topic_clusters(
             "examples": [t.to_dict() for t in exemplar],
         })
     return clusters
+
+
+def compute_sentiment_overview(
+    tweets: list[Tweet],
+    openai_api_key: str | None = None,
+    openai_base_url: str = "https://api.openai.com/v1",
+    model: str = "gpt-5-mini",
+) -> dict:
+    """舆情正/中/负占比：优先 AI 逐条判定，失败时退回词典分数。"""
+    if openai_api_key:
+        try:
+            return compute_sentiment_overview_ai(
+                tweets,
+                openai_api_key=openai_api_key,
+                openai_base_url=openai_base_url,
+                model=model,
+            )
+        except Exception as exc:
+            log.warning("AI 舆情正负中立判定失败，退回词典规则: %s", exc)
+    return compute_sentiment_overview_by_dictionary(tweets)
+
+
+def compute_sentiment_overview_by_dictionary(tweets: list[Tweet]) -> dict:
+    buckets = {
+        "positive": [],
+        "neutral": [],
+        "negative": [],
+    }
+    for tweet in tweets:
+        score = sentiment_score(tweet.text)
+        if score >= 0.75:
+            label = "positive"
+        elif score <= -0.5:
+            label = "negative"
+        else:
+            label = "neutral"
+        buckets[label].append({
+            "tweet": tweet,
+            "reason": _extract_reason(tweet.text),
+        })
+    return _build_sentiment_overview(buckets, total=len(tweets), source="dictionary")
+
+
+def compute_sentiment_overview_ai(
+    tweets: list[Tweet],
+    openai_api_key: str,
+    openai_base_url: str = "https://api.openai.com/v1",
+    model: str = "gpt-5-mini",
+    batch_size: int = 30,
+) -> dict:
+    if not tweets:
+        return _build_sentiment_overview(
+            {"positive": [], "neutral": [], "negative": []},
+            total=0,
+            source="ai",
+        )
+
+    by_id = {str(tweet.tweet_id): tweet for tweet in tweets}
+    buckets = {
+        "positive": [],
+        "neutral": [],
+        "negative": [],
+    }
+    seen_ids: set[str] = set()
+    ranked = sorted(tweets, key=lambda tweet: (tweet.views, tweet.engagement()), reverse=True)
+    for start in range(0, len(ranked), batch_size):
+        batch = ranked[start:start + batch_size]
+        response = _call_openai_sentiment_judge(
+            openai_api_key=openai_api_key,
+            openai_base_url=openai_base_url,
+            model=model,
+            payload=_build_sentiment_payload(batch),
+        )
+        for item in response.get("items", []):
+            tweet_id = str(item.get("tweet_id", ""))
+            tweet = by_id.get(tweet_id)
+            if tweet is None:
+                continue
+            label = _normalize_sentiment_label(item.get("label"))
+            buckets[label].append({
+                "tweet": tweet,
+                "reason": str(item.get("reason") or "")[:120],
+            })
+            seen_ids.add(tweet_id)
+
+    # 模型漏判时用词典补齐，保证占比分母始终是全部命中帖。
+    missing = [tweet for tweet in tweets if str(tweet.tweet_id) not in seen_ids]
+    for tweet in missing:
+        score = sentiment_score(tweet.text)
+        if score >= 0.75:
+            label = "positive"
+        elif score <= -0.5:
+            label = "negative"
+        else:
+            label = "neutral"
+        buckets[label].append({
+            "tweet": tweet,
+            "reason": _extract_reason(tweet.text),
+        })
+
+    return _build_sentiment_overview(buckets, total=len(tweets), source="ai")
+
+
+def _build_sentiment_overview(
+    buckets: dict[str, list[dict]],
+    total: int,
+    source: str,
+) -> dict:
+    label_names = {
+        "positive": "正面",
+        "neutral": "中立",
+        "negative": "负面",
+    }
+    items = []
+    for label in ("positive", "neutral", "negative"):
+        entries = buckets.get(label, [])
+        entries.sort(
+            key=lambda entry: (
+                entry["tweet"].views,
+                entry["tweet"].engagement(),
+            ),
+            reverse=True,
+        )
+        count = len(entries)
+        examples = []
+        for entry in entries[:2]:
+            tweet = entry["tweet"]
+            examples.append({
+                **tweet.to_dict(),
+                "reason": str(entry.get("reason") or "")[:120],
+            })
+        items.append({
+            "label": label,
+            "name": label_names[label],
+            "count": count,
+            "pct": round(count / max(total, 1) * 100, 1),
+            "examples": examples,
+        })
+    return {
+        "source": source,
+        "total": total,
+        "items": items,
+    }
+
+
+def _build_sentiment_payload(tweets: list[Tweet]) -> list[dict]:
+    return [{
+        "tweet_id": tweet.tweet_id,
+        "author": tweet.author,
+        "views": tweet.views,
+        "text": re.sub(r"\s+", " ", tweet.text or "")[:1000],
+    } for tweet in tweets]
+
+
+def _call_openai_sentiment_judge(
+    openai_api_key: str,
+    openai_base_url: str,
+    model: str,
+    payload: list[dict],
+) -> dict:
+    system_prompt = (
+        "你是 Hailuo / MiniMax Video 的社媒舆情分析员。"
+        "请判断每条推文对 Hailuo、MiniMax Video、Hailuo AI 或 MiniMax 的态度："
+        "positive=明确称赞、推荐、展示满意结果、认可价格/能力；"
+        "negative=明确抱怨、批评、退款/诈骗/失败/质量差/强烈负面竞品比较；"
+        "neutral=教程、提示词、纯作品展示、新闻转述、普通提及、无法判断态度。"
+        "不要把影视剧情或 prompt 里的 crash、chaos、dark 等词当负面。"
+        "只输出 JSON，不要输出解释。"
+    )
+    user_prompt = (
+        "请逐条判断，返回格式："
+        '{"items":[{"tweet_id":"...","label":"positive|neutral|negative",'
+        '"reason":"中文短理由，<=40字"}]}'
+        "\n推文：\n"
+        + json.dumps(payload, ensure_ascii=False)
+    )
+    endpoint = f"{openai_base_url.rstrip('/')}/responses"
+    with httpx.Client(timeout=90) as client:
+        response = client.post(
+            endpoint,
+            headers={
+                "Authorization": f"Bearer {openai_api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "input": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "max_output_tokens": 3000,
+            },
+        )
+    response.raise_for_status()
+    return _parse_openai_json(response.json())
+
+
+def _normalize_sentiment_label(value: object) -> str:
+    label = str(value or "").strip().lower()
+    aliases = {
+        "positive": "positive",
+        "pos": "positive",
+        "正面": "positive",
+        "neutral": "neutral",
+        "neu": "neutral",
+        "中立": "neutral",
+        "negative": "negative",
+        "neg": "negative",
+        "负面": "negative",
+    }
+    return aliases.get(label, "neutral")
 
 
 def compute_risks(
