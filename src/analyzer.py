@@ -827,21 +827,21 @@ def compute_risks(
 
 
 def compute_risks_by_dictionary(tweets: list[Tweet], threshold: float = -0.5) -> list[dict]:
-    """词典兜底：情感分 < threshold 的推文列为风险。"""
+    """词典兜底：负面分或疑似风险词命中的推文列为潜在风险。"""
     flagged = []
     for t in tweets:
         if _is_hailuo_price_advantage(t.text):
             continue
         s = sentiment_score(t.text)
-        if s <= threshold:
+        if s <= threshold or _has_potential_risk_terms(t.text):
             flagged.append({
                 "tweet": t.to_dict(),
                 "score": round(s, 2),
                 "reason": _extract_reason(t.text),
+                "risk_type": "潜在风险",
             })
-    # 按情感分升序（最负面优先）
-    flagged.sort(key=lambda x: x["score"])
-    return flagged[:10]
+    flagged.sort(key=lambda x: (x["score"], -x["tweet"].get("views", 0)))
+    return flagged[:20]
 
 
 def compute_risks_ai(
@@ -851,7 +851,7 @@ def compute_risks_ai(
     model: str = "gpt-5-mini",
     batch_size: int = 15,
 ) -> list[dict]:
-    """用 OpenAI 模型判断真正的产品/品牌风险，避免剧情词误报。"""
+    """用 OpenAI 模型判断潜在产品/品牌风险，避免剧情词误报。"""
     if not tweets:
         return []
     by_id = {str(tweet.tweet_id): tweet for tweet in tweets}
@@ -882,7 +882,25 @@ def compute_risks_ai(
                 "judge": "ai",
             })
     flagged.sort(key=lambda item: (item["score"], -item["tweet"].get("views", 0)))
-    return flagged[:10]
+    return flagged[:20]
+
+
+def _has_potential_risk_terms(text: str) -> bool:
+    """词典兜底用：宁可多报的潜在风险词。"""
+    if _is_hailuo_price_advantage(text):
+        return False
+    text_lower = (text or "").lower()
+    terms = (
+        "refund", "cancel", "cancelled", "canceled", "expensive", "overpriced",
+        "pay a lot", "too much", "not worth", "bad", "worse", "worst",
+        "bug", "broken", "fail", "failed", "issue", "problem", "doesn't work",
+        "does not work", "can't use", "cannot use", "crash", "down", "slow",
+        "limit", "limited", "quota", "credit issue", "credits issue", "scam",
+        "退款", "取消", "太贵", "贵", "不值", "差", "更差", "最差",
+        "失败", "不能用", "无法使用", "问题", "故障", "崩溃", "卡顿",
+        "额度", "限制", "诈骗", "骗",
+    )
+    return any(term in text_lower for term in terms)
 
 
 def _build_risk_payload(tweets: list[Tweet]) -> list[dict]:
@@ -902,9 +920,12 @@ def _call_openai_risk_judge(
 ) -> dict:
     system_prompt = (
         "你是 Hailuo / MiniMax Video 的品牌舆情风险分析员。"
-        "只判断推文本身是否对 Hailuo、MiniMax、Hailuo AI、MiniMax Video 构成真实舆情风险。"
-        "风险包括：产品 bug、崩溃、服务不可用、生成质量差、退款/诈骗、价格/额度抱怨、"
-        "强烈负面竞品比较、公司/融资/股价/监管/商业化负面新闻。"
+        "请用“宁可多报、不要漏报”的标准判断。只要推文本身可能对 Hailuo、"
+        "MiniMax、Hailuo AI、MiniMax Video 构成潜在舆情风险，就把 is_risk 设为 true。"
+        "潜在风险包括：轻微或明确的产品 bug、崩溃、服务不可用、生成质量差、"
+        "取消订阅、退款、诈骗质疑、价格/额度抱怨、生成失败、速度慢、限制太多、"
+        "强烈或隐含的负面竞品比较、用户犹豫/担忧、公司/融资/股价/监管/商业化负面新闻。"
+        "低置信度但值得人工看一眼的，也设为 is_risk=true，severity=1，risk_type 写“潜在风险”。"
         "只有针对 Hailuo 本身的价格贵、额度差、收费不满才算价格风险。"
         "如果推文抱怨其他平台或竞品贵，同时说 Hailuo 有折扣、更便宜、50% off、"
         "better rates、affordable、cheap、low price，这对 Hailuo 是正面，不是风险。"
@@ -916,7 +937,8 @@ def _call_openai_risk_judge(
     user_prompt = (
         "请逐条判断，返回格式："
         '{"items":[{"tweet_id":"...","is_risk":true/false,'
-        '"severity":1-3,"risk_type":"...","reason":"中文短理由，<=60字","evidence":"原文依据，<=80字"}]}'
+        '"severity":1-3,"risk_type":"潜在风险/质量问题/价格额度/竞品比较/服务故障/退款取消/其他",'
+        '"reason":"中文短理由，<=60字","evidence":"原文依据，<=80字"}]}'
         "\n推文：\n"
         + json.dumps(payload, ensure_ascii=False)
     )

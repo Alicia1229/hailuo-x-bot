@@ -263,13 +263,14 @@ def render_risks(risks: list[dict]) -> list[dict]:
         return [{
             "tag": "div",
             "text": {"tag": "lark_md",
-                     "content": "**🛡 风险监控**\n_本期未检测到明显负面倾向的推文 ✅_"},
+                     "content": "**🛡 潜在风险监控**\n_本期未检测到需要人工关注的潜在风险推文 ✅_"},
         }]
-    lines = [f"**🛡 风险监控（情感分析过滤到 {len(risks)} 条）**"]
+    lines = [f"**🛡 潜在风险监控（需人工关注 {len(risks)} 条）**"]
     for r in risks:
         t = r["tweet"]
+        risk_type = _safe_md_text(r.get("risk_type", "潜在风险"))
         lines.append(
-            f"- 情感分 **{r['score']}** · [{t['author']}]({t['author_url']}) 👁{_fmt(t['views'])} "
+            f"- **{risk_type}** · 风险分 **{r['score']}** · [{t['author']}]({t['author_url']}) 👁{_fmt(t['views'])} "
             f"❤️{_fmt(t['likes'])} 💬{_fmt(t['replies'])}\n"
             f"  _\"{_truncate(_safe_md_text(r.get('reason', '')), 80)}\"_\n"
             f"  🔗 [打开]({t['url']})"
@@ -280,7 +281,7 @@ def render_risks(risks: list[dict]) -> list[dict]:
     }, {"tag": "hr"}, {
         "tag": "div",
         "text": {"tag": "lark_md",
-                 "content": "<font color='grey'>判定规则：优先由 AI 判断真实产品/品牌风险；AI 不可用时使用词典兜底。</font>"},
+                 "content": "<font color='grey'>判定规则：优先由 AI 按“宁可多报、不要漏报”筛潜在产品/品牌风险；AI 不可用时使用词典兜底。</font>"},
     }]
     return elements
 
