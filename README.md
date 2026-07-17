@@ -97,7 +97,7 @@ bash scripts/install_launchd.sh
 > GitHub 的 cron 是 UTC 时区。每天 19:07 Asia/Shanghai = 11:07 UTC。
 >
 > 云端流程会先生成并 push GitHub Pages，确认本次报告 ID 已上线后再发送飞书；任一步骤失败都会让 Actions 标红。
-> 本地/launchd 模式不会自动发布 GitHub Pages，因此飞书卡片不附完整报告链接，避免发送尚未上线的地址。
+> 本地/launchd 模式也会先发布 GitHub Pages，确认本次报告已上线后再发送带完整表格链接的飞书主卡片；发布失败时不会发送缺少链接的主卡片。
 
 ### 方案 C：cron（懒得解释，老手用）
 

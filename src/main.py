@@ -131,6 +131,50 @@ def _render_report(report_file: Path) -> None:
     )
 
 
+def _publish_report(report_file: Path, report: dict) -> None:
+    """发布本次完整报告，并等待 GitHub Pages 确认可访问。"""
+    report_date = str(report.get("meta", {}).get("report_date", ""))
+    if len(report_date) != 8 or not report_date.isdigit():
+        raise ValueError("报告日期无效，无法发布完整报告")
+
+    report_html = Path("docs/reports") / f"{report_date}.html"
+    manifest = Path("docs/reports/manifest.json")
+    publish_paths = [report_html, manifest]
+    missing = [str(path) for path in publish_paths if not path.exists()]
+    if missing:
+        raise FileNotFoundError(f"完整报告发布文件缺失: {', '.join(missing)}")
+
+    path_args = [str(path) for path in publish_paths]
+    subprocess.run(["git", "add", "--", *path_args], check=True)
+    staged = subprocess.run(
+        ["git", "diff", "--cached", "--quiet", "--", *path_args],
+        check=False,
+    )
+    if staged.returncode == 1:
+        subprocess.run(
+            [
+                "git",
+                "commit",
+                "-m",
+                f"docs: publish local report {report_date}",
+                "--",
+                *path_args,
+            ],
+            check=True,
+        )
+        subprocess.run(["git", "push", "origin", "HEAD:main"], check=True)
+    elif staged.returncode == 0:
+        log.info("完整报告文件无变化，直接检查 GitHub Pages")
+    else:
+        staged.check_returncode()
+
+    subprocess.run(
+        [sys.executable, "scripts/wait_for_report.py", str(report_file)],
+        check=True,
+        cwd=Path.cwd(),
+    )
+
+
 def _build_card(report: dict, include_full_report_link: bool = True) -> dict:
     report_copy = copy.deepcopy(report)
     meta = report_copy.get("meta", {})
@@ -317,10 +361,11 @@ def run_once(
         _render_report(report_file)
 
         if send_report:
-            log.info("step4: 发 Hailuo 主卡片")
-            # 本地/launchd 运行只生成 HTML，并不会自动发布到 GitHub Pages。
-            _send_report(cfg, report, include_full_report_link=False)
-            log.info("step5: 抓竞品并单独发卡片")
+            log.info("step4: 发布完整报告并等待 GitHub Pages")
+            _publish_report(report_file, report)
+            log.info("step5: 发带完整报告链接的 Hailuo 主卡片")
+            _send_report(cfg, report)
+            log.info("step6: 抓竞品并单独发卡片")
             competitor_quality = {"complete": True, "warnings": []}
             competitor_results = _fetch_competitor_results(
                 cfg,
