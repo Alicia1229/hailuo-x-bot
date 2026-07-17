@@ -58,7 +58,7 @@ def _config() -> dict:
         ],
         "competitors": [k.strip() for k in os.environ.get(
             "COMPETITOR_KEYWORDS",
-            "Seedance,Dreamina,Kling,Vidu,Pika,Runway,Happy Horse,Higgsfield",
+            "Seedance,Dreamina,Kling,Vidu,Happy Horse,Higgsfield",
         ).split(",") if k.strip()],
         "tz": os.environ.get("TZ", "Asia/Shanghai"),
         "push_hour": int(os.environ.get("PUSH_HOUR", 17)),

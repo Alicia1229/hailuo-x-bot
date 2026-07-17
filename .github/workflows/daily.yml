@@ -32,7 +32,7 @@ jobs:
       PUSH_HOUR: "19"
       PUSH_MINUTE: "7"
       KEYWORDS: "hailuo03,hailuo3,hailuo,hailuoai,MiniMax Video,MiniMax H3"
-      COMPETITOR_KEYWORDS: "Seedance,Dreamina,Kling,Vidu,Pika,Runway,Happy Horse,Higgsfield"
+      COMPETITOR_KEYWORDS: "Seedance,Dreamina,Kling,Vidu,Happy Horse,Higgsfield"
       LOOKBACK_HOURS: "24"
       MAX_HAILUO_TWEETS: "-1"
       MAX_PER_QUERY: "-1"
