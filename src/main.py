@@ -8,6 +8,7 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 from datetime import datetime, timedelta
@@ -137,36 +138,80 @@ def _publish_report(report_file: Path, report: dict) -> None:
     if len(report_date) != 8 or not report_date.isdigit():
         raise ValueError("报告日期无效，无法发布完整报告")
 
-    report_html = Path("docs/reports") / f"{report_date}.html"
-    manifest = Path("docs/reports/manifest.json")
-    publish_paths = [report_html, manifest]
-    missing = [str(path) for path in publish_paths if not path.exists()]
-    if missing:
-        raise FileNotFoundError(f"完整报告发布文件缺失: {', '.join(missing)}")
+    report_file = report_file.resolve()
+    path_args = [
+        f"docs/reports/{report_date}.html",
+        "docs/reports/manifest.json",
+    ]
+    published = False
+    for attempt in range(1, 3):
+        subprocess.run(["git", "fetch", "origin", "main"], check=True)
+        with tempfile.TemporaryDirectory(prefix="hailuo-publish-") as temp_dir:
+            worktree = Path(temp_dir) / "repo"
+            worktree_added = False
+            try:
+                subprocess.run(
+                    ["git", "worktree", "add", "--detach", str(worktree), "origin/main"],
+                    check=True,
+                )
+                worktree_added = True
+                subprocess.run(
+                    [
+                        sys.executable,
+                        str(worktree / "scripts/render_full_report.py"),
+                        str(report_file),
+                    ],
+                    check=True,
+                    cwd=worktree,
+                )
+                subprocess.run(
+                    ["git", "-C", str(worktree), "add", "--", *path_args],
+                    check=True,
+                )
+                staged = subprocess.run(
+                    [
+                        "git", "-C", str(worktree), "diff", "--cached",
+                        "--quiet", "--", *path_args,
+                    ],
+                    check=False,
+                )
+                if staged.returncode == 1:
+                    subprocess.run(
+                        [
+                            "git", "-C", str(worktree),
+                            "-c", "user.name=hailuo-bot[bot]",
+                            "-c", "user.email=bot@example.com",
+                            "commit", "-m", f"docs: publish report {report_date}",
+                            "--", *path_args,
+                        ],
+                        check=True,
+                    )
+                    pushed = subprocess.run(
+                        [
+                            "git", "-C", str(worktree), "push",
+                            "origin", "HEAD:main",
+                        ],
+                        check=False,
+                    )
+                    published = pushed.returncode == 0
+                elif staged.returncode == 0:
+                    log.info("完整报告文件无变化，直接检查 GitHub Pages")
+                    published = True
+                else:
+                    staged.check_returncode()
+            finally:
+                if worktree_added:
+                    subprocess.run(
+                        ["git", "worktree", "remove", "--force", str(worktree)],
+                        check=False,
+                    )
 
-    path_args = [str(path) for path in publish_paths]
-    subprocess.run(["git", "add", "--", *path_args], check=True)
-    staged = subprocess.run(
-        ["git", "diff", "--cached", "--quiet", "--", *path_args],
-        check=False,
-    )
-    if staged.returncode == 1:
-        subprocess.run(
-            [
-                "git",
-                "commit",
-                "-m",
-                f"docs: publish local report {report_date}",
-                "--",
-                *path_args,
-            ],
-            check=True,
-        )
-        subprocess.run(["git", "push", "origin", "HEAD:main"], check=True)
-    elif staged.returncode == 0:
-        log.info("完整报告文件无变化，直接检查 GitHub Pages")
-    else:
-        staged.check_returncode()
+        if published:
+            break
+        log.warning("第 %d/2 次发布遇到远端更新，重新同步后重试", attempt)
+
+    if not published:
+        raise RuntimeError("完整报告连续两次推送失败")
 
     subprocess.run(
         [sys.executable, "scripts/wait_for_report.py", str(report_file)],
@@ -357,15 +402,12 @@ def run_once(
         }
 
         report_file = _write_report(report)
-        log.info("step3: 渲染完整报告 HTML")
-        _render_report(report_file)
-
         if send_report:
-            log.info("step4: 发布完整报告并等待 GitHub Pages")
+            log.info("step3: 发布完整报告并等待 GitHub Pages")
             _publish_report(report_file, report)
-            log.info("step5: 发带完整报告链接的 Hailuo 主卡片")
+            log.info("step4: 发带完整报告链接的 Hailuo 主卡片")
             _send_report(cfg, report)
-            log.info("step6: 抓竞品并单独发卡片")
+            log.info("step5: 抓竞品并单独发卡片")
             competitor_quality = {"complete": True, "warnings": []}
             competitor_results = _fetch_competitor_results(
                 cfg,
@@ -379,6 +421,9 @@ def run_once(
                 "competitor_table": analyzer.build_competitor_table(competitor_results),
             }
             _send_competitor_report(cfg, competitor_report)
+        else:
+            log.info("step3: 渲染完整报告 HTML")
+            _render_report(report_file)
 
         log.info(
             "==== 完成，耗时 %.1fs；共 %d 条 hailuo 推文；完整报告 %s ====",
@@ -400,6 +445,14 @@ def send_saved_report(cfg: dict, report_path: Path) -> None:
     report = json.loads(report_path.read_text(encoding="utf-8"))
     _send_report(cfg, report)
     log.info("已发送已发布报告: %s", report_path)
+
+
+def publish_saved_report(report_path: Path) -> None:
+    if report_path.suffix == ".txt":
+        report_path = Path(report_path.read_text(encoding="utf-8").strip())
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    _publish_report(report_path, report)
+    log.info("已发布完整报告: %s", report_path)
 
 
 def send_competitor_report(cfg: dict, report_path: Path) -> None:
@@ -450,20 +503,24 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--publish-report", type=Path)
     parser.add_argument("--send-report", type=Path)
     parser.add_argument("--send-competitor-report", type=Path)
     args = parser.parse_args()
 
     if args.prepare_only and not args.once:
         parser.error("--prepare-only 必须与 --once 一起使用")
-    if args.send_report and (args.once or args.prepare_only or args.send_competitor_report):
-        parser.error("--send-report 不能与 --once/--prepare-only/--send-competitor-report 同时使用")
-    if args.send_competitor_report and (args.once or args.prepare_only):
-        parser.error("--send-competitor-report 不能与 --once/--prepare-only 同时使用")
+    single_actions = [args.publish_report, args.send_report, args.send_competitor_report]
+    if sum(value is not None for value in single_actions) > 1:
+        parser.error("发布/发送报告参数不能同时使用")
+    if any(single_actions) and (args.once or args.prepare_only):
+        parser.error("发布/发送报告参数不能与 --once/--prepare-only 同时使用")
 
     required_keys = []
     if args.send_report or args.send_competitor_report:
         required_keys.append("FEISHU_WEBHOOK_URL")
+    elif args.publish_report:
+        pass
     else:
         required_keys.append("KEYWORDS")
         if not args.prepare_only:
@@ -473,7 +530,9 @@ def main() -> None:
             sys.exit(f"❌ 环境变量 {key} 缺失，先按 .env.example 填好。")
 
     cfg = _config()
-    if args.send_report:
+    if args.publish_report:
+        publish_saved_report(args.publish_report)
+    elif args.send_report:
         send_saved_report(cfg, args.send_report)
     elif args.send_competitor_report:
         send_competitor_report(cfg, args.send_competitor_report)

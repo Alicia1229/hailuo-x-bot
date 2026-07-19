@@ -57,21 +57,8 @@ jobs:
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
           RISK_MODEL: gpt-5.6-sol
         run: python -m src.main --once --prepare-only
-      - name: Publish full report to GitHub Pages
-        run: |
-          if [ -d docs/reports ]; then
-            git config user.name "hailuo-bot[bot]"
-            git config user.email "bot@example.com"
-            git add docs/reports/
-            if git diff --cached --quiet; then
-              echo "无新报告,跳过 commit"
-            else
-              git commit -m "docs: daily report $(date -u +%Y-%m-%d)"
-              git push
-            fi
-          fi
-      - name: Wait for GitHub Pages
-        run: python scripts/wait_for_report.py cache/latest_report_path.txt
+      - name: Publish full report and wait for GitHub Pages
+        run: python -m src.main --publish-report cache/latest_report_path.txt
       - name: Send Hailuo Feishu card
         env:
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
