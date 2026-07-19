@@ -6,6 +6,7 @@ import copy
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,11 @@ from .scraper import fetch_for_query_sync
 load_dotenv()
 
 log = logging.getLogger("main")
+
+H3_COOCCURRENCE_PAIRS = (
+    ("MiniMax", "H3"),
+    ("Hailuo", "H3"),
+)
 
 
 def _configure_logging() -> None:
@@ -80,6 +86,33 @@ def _config() -> dict:
 
 def _q(name: str) -> str:
     return f'"{name}"' if " " in name else name
+
+
+def _contains_term(text: str, term: str) -> bool:
+    return bool(re.search(
+        rf"(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9])",
+        text,
+        flags=re.IGNORECASE,
+    ))
+
+
+def _matches_hailuo_keywords(text: str, keywords: list[str]) -> bool:
+    normalized = text.casefold()
+    if any(keyword.casefold() in normalized for keyword in keywords):
+        return True
+    return any(
+        _contains_term(text, left) and _contains_term(text, right)
+        for left, right in H3_COOCCURRENCE_PAIRS
+    )
+
+
+def _build_hailuo_query(keywords: list[str]) -> str:
+    clauses = [_q(keyword) for keyword in keywords]
+    clauses.extend(
+        f"({left} {right})"
+        for left, right in H3_COOCCURRENCE_PAIRS
+    )
+    return " OR ".join(dict.fromkeys(clauses))
 
 
 def _full_report_url(pages_base: str, report_time: datetime) -> str:
@@ -341,7 +374,7 @@ def run_once(
             window_end.isoformat(),
         )
 
-        hailuo_query = " OR ".join(_q(keyword) for keyword in cfg["keywords"])
+        hailuo_query = _build_hailuo_query(cfg["keywords"])
         log.info("step1: 抓 hailuo 关键词")
         hailuo_tweets = fetch_for_query_sync(
             query=hailuo_query,
@@ -350,10 +383,9 @@ def run_once(
             db_path=cfg["accounts_db"],
             window_end=window_end,
         )
-        keywords_lower = [keyword.lower() for keyword in cfg["keywords"]]
         hailuo_tweets = [
             tweet for tweet in hailuo_tweets
-            if any(keyword in tweet.text.lower() for keyword in keywords_lower)
+            if _matches_hailuo_keywords(tweet.text, cfg["keywords"])
         ]
         if not hailuo_tweets:
             _add_quality_warning(data_quality, "Hailuo 主查询返回 0 条，请复核 X 登录态和搜索可用性")
