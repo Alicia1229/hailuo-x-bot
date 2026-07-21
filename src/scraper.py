@@ -205,5 +205,3 @@ if __name__ == "__main__":
     for t in out[:5]:
         print(f"- {t.url}  views={t.views}  ❤️{t.likes}  🔁{t.retweets}  💬{t.replies}")
         print(f"  {t.text[:120]}")
-
-
