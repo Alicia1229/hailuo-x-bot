@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from dotenv import load_dotenv
+import httpx
 
 from . import analyzer, feishu
 from .scraper import fetch_for_query_sync
@@ -117,6 +118,24 @@ def _build_hailuo_query(keywords: list[str]) -> str:
 
 def _full_report_url(pages_base: str, report_time: datetime) -> str:
     return f"{pages_base.rstrip('/')}/reports/{report_time:%Y%m%d}.html"
+
+
+def _published_report_exists(report_url: str, report_day: datetime) -> bool:
+    """Return whether GitHub Pages already has this calendar-day report."""
+    try:
+        response = httpx.get(
+            report_url,
+            headers={"Cache-Control": "no-cache"},
+            params={"ts": int(time.time())},
+            timeout=20,
+            follow_redirects=True,
+        )
+    except httpx.HTTPError as exc:
+        log.warning("检查已发布报告失败（%s），继续执行本机任务", type(exc).__name__)
+        return False
+
+    expected_window = f"固定窗口 {report_day.isoformat()}"
+    return response.status_code == 200 and expected_window in response.text
 
 
 def _previous_calendar_day_window(
@@ -366,6 +385,14 @@ def run_once(
     try:
         window_start, window_end = _previous_calendar_day_window(cfg)
         report_day = window_start
+        full_report_url = _full_report_url(cfg["pages_base_url"], report_day)
+        if send_report and _published_report_exists(full_report_url, report_day):
+            log.info(
+                "完整报告已存在，跳过本机重复抓取与推送: %s",
+                full_report_url,
+            )
+            return Path(f"docs/reports/{report_day:%Y%m%d}.html")
+
         window_hours = int((window_end - window_start).total_seconds() // 3600)
         data_quality = {"complete": True, "warnings": []}
         log.info(
@@ -391,7 +418,6 @@ def run_once(
             _add_quality_warning(data_quality, "Hailuo 主查询返回 0 条，请复核 X 登录态和搜索可用性")
 
         log.info("step2: 分析 Hailuo 主报告")
-        full_report_url = _full_report_url(cfg["pages_base_url"], report_day)
         generated_at = datetime.now(ZoneInfo(cfg["tz"]))
         report_id = f"report_{report_day:%Y%m%d}_{generated_at:%Y%m%dT%H%M%S}"
         report = {
