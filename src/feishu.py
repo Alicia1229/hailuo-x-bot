@@ -127,7 +127,7 @@ def render_top_tweets(tweets: list[dict], cap: int = 5) -> list[dict]:
 
 
 def render_all_tweets_link(total: int, full_report_url: str | None) -> list[dict]:
-    """渲染完整命中帖子表格入口。"""
+    """渲染可转发的完整报告入口；报告内再链接到全量推文表格。"""
     if not full_report_url or total <= 0:
         return []
     return [{
@@ -135,9 +135,9 @@ def render_all_tweets_link(total: int, full_report_url: str | None) -> list[dict
         "text": {
             "tag": "lark_md",
             "content": (
-                f"📋 **所有命中帖子表格**\n"
-                f"共 **{total}** 条，可搜索 / 排序 / 过滤："
-                f"[打开完整表格]({full_report_url})"
+                f"📋 **完整报告**\n"
+                f"包含全部分析，并提供 **{total}** 条推文清单入口："
+                f"[打开完整报告]({full_report_url})"
             ),
         },
     }, {"tag": "hr"}]
@@ -328,7 +328,7 @@ def build_card(
     body_elements.extend(render_public_opinion(report.get("public_opinion", [])))
     body_elements.extend(render_risks(report.get("risky_tweets", [])))
 
-    card = {
+    return {
         "msg_type": "interactive",
         "card": {
             "schema": "2.0",
@@ -342,9 +342,6 @@ def build_card(
             },
         },
     }
-    if full_report_url:
-        card["card"]["card_link"] = {"url": full_report_url}
-    return card
 
 
 def build_competitor_card(report: dict, lookback_hours: int = 24) -> dict:
