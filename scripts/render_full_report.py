@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from html import escape
 from pathlib import Path
@@ -16,7 +17,70 @@ DOCS = ROOT / "docs" / "reports"
 DOCS.mkdir(parents=True, exist_ok=True)
 
 
-HTML_TEMPLATE = """<!doctype html>
+REPORT_TEMPLATE = """<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{title}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  * {{ box-sizing: border-box; }}
+  body {{ font: 14px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+         margin: 0; background: #f6f8fa; color: #1f2328; }}
+  main {{ max-width: 960px; margin: 0 auto; padding: 28px 20px 48px; }}
+  h1 {{ font-size: 24px; margin: 0 0 8px; }}
+  h2 {{ font-size: 17px; margin: 0 0 14px; }}
+  .meta {{ color: #656d76; margin-bottom: 18px; font-size: 12px; }}
+  .summary {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(130px,1fr)); gap: 10px; margin-bottom: 18px; }}
+  .metric {{ background: #fff; border: 1px solid #d0d7de; border-radius: 6px; padding: 12px 14px; }}
+  .metric .label {{ color: #656d76; font-size: 11px; }}
+  .metric .value {{ font-size: 19px; font-weight: 650; margin-top: 3px; }}
+  section {{ padding: 18px 0; border-top: 1px solid #d8dee4; }}
+  .tweet, .topic, .risk {{ padding: 12px 0; border-top: 1px solid #eaeef2; }}
+  .tweet:first-of-type, .topic:first-of-type, .risk:first-of-type {{ border-top: 0; }}
+  .muted {{ color: #656d76; font-size: 12px; }}
+  a {{ color: #0969da; text-decoration: none; }}
+  a:hover {{ text-decoration: underline; }}
+  .button {{ display: inline-block; background: #1f883d; color: #fff; font-weight: 600;
+             padding: 9px 14px; border-radius: 6px; margin-top: 8px; }}
+  .button:hover {{ text-decoration: none; background: #1a7f37; }}
+  table {{ width: 100%; border-collapse: collapse; background: #fff; }}
+  th, td {{ padding: 9px 10px; text-align: left; border: 1px solid #d8dee4; vertical-align: top; }}
+  th {{ background: #f6f8fa; }}
+  .warning {{ background: #fff8c5; border: 1px solid #d4a72c; border-radius: 6px;
+              padding: 10px 12px; margin-bottom: 16px; color: #633c01; }}
+  .terms {{ line-height: 2; }}
+  @media (max-width: 640px) {{ main {{ padding: 18px 14px 36px; }} h1 {{ font-size: 21px; }} }}
+</style>
+</head>
+<body data-report-count="{total_tweets}">
+<main>
+  <h1>{title}</h1>
+  <div class="meta">{meta}</div>
+  {quality_html}
+  <div class="summary">
+    <div class="metric"><div class="label">原创帖子</div><div class="value">{total_tweets}</div></div>
+    <div class="metric"><div class="label">总 Views</div><div class="value">{total_views:,}</div></div>
+    <div class="metric"><div class="label">总 Engagement</div><div class="value">{total_engagement:,}</div></div>
+    <div class="metric"><div class="label">作者数</div><div class="value">{authors}</div></div>
+  </div>
+  <section>
+    <h2>全部帖子</h2>
+    <div class="muted">完整清单支持搜索、排序和筛选。</div>
+    <a class="button" href="{tweets_file}">查看全部 {total_tweets} 条推文</a>
+  </section>
+  <section><h2>Views Top 5</h2>{top_tweets_html}</section>
+  <section><h2>舆情正负面占比</h2>{sentiment_html}</section>
+  <section><h2>热议话题 Top 3</h2>{topics_html}</section>
+  <section><h2>潜在风险监控</h2>{risks_html}</section>
+  <section><h2>Related 高频词</h2><div class="terms">{terms_html}</div></section>
+</main>
+</body>
+</html>
+"""
+
+
+TWEETS_TEMPLATE = """<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -132,6 +196,91 @@ for (const th of document.querySelectorAll('th[data-k]')) {{
 """
 
 
+def _fmt(value: int) -> str:
+    return f"{int(value or 0):,}"
+
+
+def _tweet_preview(tweet: dict, index: int | None = None) -> str:
+    prefix = f"<strong>{index}.</strong> " if index is not None else ""
+    engagement = sum(int(tweet.get(key, 0) or 0) for key in ("likes", "retweets", "replies", "quotes"))
+    return (
+        '<div class="tweet">'
+        f'{prefix}<a href="{escape(tweet.get("author_url", ""))}" target="_blank" rel="noopener">'
+        f'<strong>{escape(tweet.get("author", ""))}</strong></a> · '
+        f'Views <strong>{_fmt(tweet.get("views", 0))}</strong> · 互动 {_fmt(engagement)}<br>'
+        f'{escape(tweet.get("text", ""))}<br>'
+        f'<a href="{escape(tweet.get("url", ""))}" target="_blank" rel="noopener">打开推文</a>'
+        '</div>'
+    )
+
+
+def _render_sentiment(report: dict) -> str:
+    overview = report.get("sentiment_overview") or {}
+    items = overview.get("items", [])
+    if not items:
+        return '<div class="muted">暂无数据</div>'
+    rows = []
+    for item in items:
+        examples = item.get("examples", [])
+        example = examples[0] if examples else {}
+        example_link = (
+            f'<a href="{escape(example.get("url", ""))}" target="_blank" rel="noopener">代表帖</a>'
+            if example else "-"
+        )
+        rows.append(
+            f'<tr><td><strong>{escape(str(item.get("name", "")))}</strong></td>'
+            f'<td>{item.get("count", 0)}</td><td>{item.get("pct", 0)}%</td><td>{example_link}</td></tr>'
+        )
+    return '<table><thead><tr><th>类型</th><th>数量</th><th>占比</th><th>代表帖</th></tr></thead><tbody>' + "".join(rows) + '</tbody></table>'
+
+
+def _render_topics(report: dict) -> str:
+    items = report.get("public_opinion", [])[:3]
+    if not items:
+        return '<div class="muted">暂无数据</div>'
+    blocks = []
+    for index, item in enumerate(items, 1):
+        tweet = item.get("tweet", {})
+        blocks.append(
+            '<div class="topic">'
+            f'<strong>{index}. {escape(str(item.get("summary") or item.get("topic") or "其他讨论"))}</strong><br>'
+            f'讨论 {item.get("count", 0)} 条（{item.get("pct", 0)}%） · '
+            f'总 Views {_fmt(item.get("views", 0))} · 总互动 {_fmt(item.get("engagement", 0))}<br>'
+            f'<span class="muted">{escape(str(item.get("reason", "")))}</span><br>'
+            f'<a href="{escape(tweet.get("url", ""))}" target="_blank" rel="noopener">查看代表帖</a>'
+            '</div>'
+        )
+    return "".join(blocks)
+
+
+def _render_risks(report: dict) -> str:
+    items = report.get("risky_tweets", [])
+    if not items:
+        return '<div class="muted">本期未检测到需要人工关注的潜在风险推文</div>'
+    blocks = []
+    for item in items:
+        tweet = item.get("tweet", {})
+        blocks.append(
+            '<div class="risk">'
+            f'<strong>{escape(str(item.get("risk_type", "潜在风险")))}</strong> · '
+            f'风险分 {item.get("score", "")} · Views {_fmt(tweet.get("views", 0))}<br>'
+            f'{escape(str(item.get("reason", "")))}<br>'
+            f'<a href="{escape(tweet.get("url", ""))}" target="_blank" rel="noopener">打开推文</a>'
+            '</div>'
+        )
+    return "".join(blocks)
+
+
+def _render_terms(report: dict) -> str:
+    terms = report.get("related_terms", [])[:20]
+    if not terms:
+        return '<span class="muted">暂无数据</span>'
+    return " · ".join(
+        f'<strong>{escape(str(item.get("term", "")))}</strong> ×{item.get("count", 0)}'
+        for item in terms
+    )
+
+
 def render_tweet_row(t: dict) -> str:
     """输出一行 HTML 表格行。"""
     text = escape(t.get("text", ""))
@@ -199,7 +348,29 @@ def main():
     window_start = meta.get("window_start", "")
     window_end = meta.get("window_end", "")
     generated_at = meta.get("generated_at", fname_stem)
-    html = HTML_TEMPLATE.format(
+    tweets_file = f"{date_str}-tweets.html"
+    report_html = REPORT_TEMPLATE.format(
+        title=f"Hailuo X 舆情报告 · {pretty_date}",
+        meta=escape(
+            f"固定窗口 {window_start} ~ {window_end} · 生成时间 {generated_at} · "
+            f"数据源: X 搜索 · 报告 ID: {report_id}"
+        ),
+        quality_html=quality_html,
+        total_tweets=summary.get("total_tweets", len(tweets)),
+        total_views=summary.get("total_views", 0),
+        total_engagement=summary.get("total_engagement", 0),
+        authors=summary.get("authors", 0),
+        tweets_file=tweets_file,
+        top_tweets_html="".join(
+            _tweet_preview(tweet, index)
+            for index, tweet in enumerate(report.get("top_tweets", [])[:5], 1)
+        ) or '<div class="muted">暂无数据</div>',
+        sentiment_html=_render_sentiment(report),
+        topics_html=_render_topics(report),
+        risks_html=_render_risks(report),
+        terms_html=_render_terms(report),
+    )
+    table_html = TWEETS_TEMPLATE.format(
         title=f"Hailuo X 全量推文 · {pretty_date}",
         meta=escape(
             f"固定窗口 {window_start} ~ {window_end} · 生成时间 {generated_at} · "
@@ -215,8 +386,11 @@ def main():
     )
 
     out_path = DOCS / f"{date_str}.html"
-    out_path.write_text(html, encoding="utf-8")
-    print(f"✅ 写出 {out_path}  ({len(tweets)} 条)")
+    tweets_path = DOCS / tweets_file
+    out_path.write_text(report_html, encoding="utf-8")
+    tweets_path.write_text(table_html, encoding="utf-8")
+    print(f"✅ 写出 {out_path}  (完整报告)")
+    print(f"✅ 写出 {tweets_path}  ({len(tweets)} 条)")
 
     # 同步更新 manifest.json(index.html 用 JS 读)
     _update_manifest(DOCS)
@@ -246,6 +420,9 @@ def _update_manifest(docs_reports: Path):
 def _count_rows(html_file: Path) -> int:
     """从 HTML 里数 data-views 属性的行,得到推文数。"""
     text = html_file.read_text(encoding="utf-8")
+    match = re.search(r'data-report-count="(\d+)"', text)
+    if match:
+        return int(match.group(1))
     return text.count('data-views="')
 
 
