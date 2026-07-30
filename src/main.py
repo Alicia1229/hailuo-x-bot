@@ -108,12 +108,75 @@ def _matches_hailuo_keywords(text: str, keywords: list[str]) -> bool:
 
 
 def _build_hailuo_query(keywords: list[str]) -> str:
+    return " OR ".join(_build_hailuo_queries(keywords))
+
+
+def _build_hailuo_queries(keywords: list[str]) -> list[str]:
+    """Build independent searches so X's per-query pagination cap cannot truncate recall."""
     clauses = [_q(keyword) for keyword in keywords]
     clauses.extend(
         f"({left} {right})"
         for left, right in H3_COOCCURRENCE_PAIRS
     )
-    return " OR ".join(dict.fromkeys(clauses))
+    return list(dict.fromkeys(clauses))
+
+
+def _fetch_hailuo_results(
+    cfg: dict,
+    window_hours: int,
+    window_end: datetime,
+    data_quality: dict,
+) -> list:
+    """Search each term independently, then deduplicate the union by tweet ID."""
+    by_id = {}
+    queries = _build_hailuo_queries(cfg["keywords"])
+    log.info("step1: 分别抓 hailuo 关键词（%d 个查询）", len(queries))
+
+    for index, query in enumerate(queries, 1):
+        remaining = cfg["max_hailuo_tweets"] - len(by_id)
+        if cfg["max_hailuo_tweets"] > 0 and remaining <= 0:
+            break
+        try:
+            tweets = fetch_for_query_sync(
+                query=query,
+                since_hours=window_hours,
+                max=remaining if cfg["max_hailuo_tweets"] > 0 else -1,
+                db_path=cfg["accounts_db"],
+                window_end=window_end,
+            )
+            for tweet in tweets:
+                if _matches_hailuo_keywords(tweet.text, cfg["keywords"]):
+                    previous = by_id.get(tweet.tweet_id)
+                    if previous is None or tweet.views > previous.views:
+                        by_id[tweet.tweet_id] = tweet
+            log.info(
+                "Hailuo 查询 %d/%d 完成，当前去重后 %d 条",
+                index,
+                len(queries),
+                len(by_id),
+            )
+        except Exception as exc:
+            _add_quality_warning(
+                data_quality,
+                f"Hailuo 子查询 {query[:40]} 抓取失败（{type(exc).__name__}）",
+            )
+
+    tweets = sorted(
+        by_id.values(),
+        key=lambda tweet: (tweet.views, tweet.engagement()),
+        reverse=True,
+    )
+    if cfg["max_hailuo_tweets"] > 0 and len(tweets) >= cfg["max_hailuo_tweets"]:
+        _add_quality_warning(
+            data_quality,
+            f"Hailuo 达到抓取上限 {cfg['max_hailuo_tweets']}，统计可能被截断",
+        )
+    if not tweets:
+        _add_quality_warning(
+            data_quality,
+            "Hailuo 子查询合计返回 0 条，请复核 X 登录态和搜索可用性",
+        )
+    return tweets
 
 
 def _full_report_url(pages_base: str, report_time: datetime) -> str:
@@ -193,6 +256,7 @@ def _publish_report(report_file: Path, report: dict) -> None:
     report_file = report_file.resolve()
     path_args = [
         f"docs/reports/{report_date}.html",
+        f"docs/reports/{report_date}-tweets.html",
         "docs/reports/manifest.json",
     ]
     published = False
@@ -318,6 +382,39 @@ def _send_report(
     )
 
 
+def _publish_and_send_main_report(
+    cfg: dict,
+    report_file: Path,
+    report: dict,
+    report_already_published: bool = False,
+) -> bool:
+    """Send the main card even when publishing the full report fails."""
+    include_full_report_link = report_already_published
+    if report_already_published:
+        log.info("完整报告已存在，跳过重复发布")
+    else:
+        try:
+            _publish_report(report_file, report)
+            include_full_report_link = True
+        except Exception as exc:
+            log.error(
+                "完整报告发布失败，先发送不带全文链接的主卡: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            _add_quality_warning(
+                report["data_quality"],
+                "完整报告暂未发布，主卡先发送；云端任务稍后补充全文链接",
+            )
+
+    _send_report(
+        cfg,
+        report,
+        include_full_report_link=include_full_report_link,
+    )
+    return include_full_report_link
+
+
 def _send_competitor_report(cfg: dict, report: dict) -> None:
     if not cfg["feishu_webhook"]:
         raise ValueError("FEISHU_WEBHOOK_URL 未配置")
@@ -386,12 +483,9 @@ def run_once(
         window_start, window_end = _previous_calendar_day_window(cfg)
         report_day = window_start
         full_report_url = _full_report_url(cfg["pages_base_url"], report_day)
-        if send_report and _published_report_exists(full_report_url, report_day):
-            log.info(
-                "完整报告已存在，跳过本机重复抓取与推送: %s",
-                full_report_url,
-            )
-            return Path(f"docs/reports/{report_day:%Y%m%d}.html")
+        report_already_published = (
+            send_report and _published_report_exists(full_report_url, report_day)
+        )
 
         window_hours = int((window_end - window_start).total_seconds() // 3600)
         data_quality = {"complete": True, "warnings": []}
@@ -401,21 +495,12 @@ def run_once(
             window_end.isoformat(),
         )
 
-        hailuo_query = _build_hailuo_query(cfg["keywords"])
-        log.info("step1: 抓 hailuo 关键词")
-        hailuo_tweets = fetch_for_query_sync(
-            query=hailuo_query,
-            since_hours=window_hours,
-            max=cfg["max_hailuo_tweets"],
-            db_path=cfg["accounts_db"],
+        hailuo_tweets = _fetch_hailuo_results(
+            cfg,
+            window_hours=window_hours,
             window_end=window_end,
+            data_quality=data_quality,
         )
-        hailuo_tweets = [
-            tweet for tweet in hailuo_tweets
-            if _matches_hailuo_keywords(tweet.text, cfg["keywords"])
-        ]
-        if not hailuo_tweets:
-            _add_quality_warning(data_quality, "Hailuo 主查询返回 0 条，请复核 X 登录态和搜索可用性")
 
         log.info("step2: 分析 Hailuo 主报告")
         generated_at = datetime.now(ZoneInfo(cfg["tz"]))
@@ -461,10 +546,17 @@ def run_once(
 
         report_file = _write_report(report)
         if send_report:
-            log.info("step3: 发布完整报告并等待 GitHub Pages")
-            _publish_report(report_file, report)
-            log.info("step4: 发带完整报告链接的 Hailuo 主卡片")
-            _send_report(cfg, report)
+            log.info("step3: 发布完整报告（失败不阻断主卡）")
+            has_full_report_link = _publish_and_send_main_report(
+                cfg,
+                report_file,
+                report,
+                report_already_published=report_already_published,
+            )
+            log.info(
+                "step4: Hailuo 主卡片已发送（全文链接=%s）",
+                "有" if has_full_report_link else "暂缺",
+            )
             log.info("step5: 抓竞品并单独发卡片")
             competitor_quality = {"complete": True, "warnings": []}
             competitor_results = _fetch_competitor_results(
