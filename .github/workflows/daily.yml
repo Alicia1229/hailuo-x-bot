@@ -14,11 +14,12 @@ name: daily-x-report
 on:
   schedule:
     - cron: "7 11 * * *"   # 19:07 Asia/Shanghai = 11:07 UTC
+    - cron: "37 12 * * *"  # 20:37 Asia/Shanghai 云端兜底；页面已存在则跳过
   workflow_dispatch:        # 允许手动触发
 
 concurrency:
   group: daily-x-report
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: write           # 让 workflow 能 commit + push docs/
@@ -31,46 +32,69 @@ jobs:
       TZ: Asia/Shanghai
       PUSH_HOUR: "19"
       PUSH_MINUTE: "7"
-      KEYWORDS: "hailuo03,hailuo3,hailuo,hailuoai,MiniMax Video,MiniMax H3"
+      KEYWORDS: "hailuo03,hailuo3,hailuo,hailuoai,MiniMax Video,MiniMax H3,MiniMaxH3"
       COMPETITOR_KEYWORDS: "Seedance,Dreamina,Kling,Vidu,Happy Horse,Higgsfield"
       LOOKBACK_HOURS: "24"
       MAX_HAILUO_TWEETS: "-1"
       MAX_PER_QUERY: "-1"
       PAGES_BASE_URL: "https://Alicia1229.github.io/hailuo-x-bot"
     steps:
+      - name: Check whether today's report already exists
+        id: existing_report
+        shell: bash
+        run: |
+          report_date="$(TZ=Asia/Shanghai date -d yesterday +%Y%m%d)"
+          report_iso="$(TZ=Asia/Shanghai date -d yesterday +%Y-%m-%d)"
+          report_url="${PAGES_BASE_URL}/reports/${report_date}.html"
+          if curl --fail --silent --show-error \
+            "${report_url}?check=${GITHUB_RUN_ID}" \
+            | grep -Fq "固定窗口 ${report_iso}T00:00:00+08:00"; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Report already exists: ${report_url}"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
+        if: steps.existing_report.outputs.exists != 'true'
         with:
           persist-credentials: true   # 让 GITHUB_TOKEN 能 push
       - uses: actions/setup-python@v5
+        if: steps.existing_report.outputs.exists != 'true'
         with:
           python-version: "3.13"
-      - run: pip install -r requirements.txt
+      - if: steps.existing_report.outputs.exists != 'true'
+        run: pip install -r requirements.txt
       - name: Register X account
+        if: steps.existing_report.outputs.exists != 'true'
         env:
           X_USERNAME: ${{ secrets.X_USERNAME }}
           X_AUTH_TOKEN: ${{ secrets.X_AUTH_TOKEN }}
           X_CT0: ${{ secrets.X_CT0 }}
         run: python scripts/register_x_account.py
       - name: Prepare Hailuo report
+        if: steps.existing_report.outputs.exists != 'true'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
           RISK_MODEL: gpt-5.6-sol
         run: python -m src.main --once --prepare-only
       - name: Publish full report and wait for GitHub Pages
+        if: steps.existing_report.outputs.exists != 'true'
         run: python -m src.main --publish-report cache/latest_report_path.txt
       - name: Send Hailuo Feishu card
+        if: steps.existing_report.outputs.exists != 'true'
         env:
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
         run: python -m src.main --send-report cache/latest_report_path.txt
       - name: Send competitor Feishu card
+        if: steps.existing_report.outputs.exists != 'true'
         env:
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
         run: python -m src.main --send-competitor-report cache/latest_report_path.txt
       - name: Notify workflow failure
-        if: ${{ failure() }}
+        if: ${{ failure() && steps.existing_report.outputs.exists != 'true' }}
         env:
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
