@@ -328,7 +328,7 @@ def build_card(
     body_elements.extend(render_public_opinion(report.get("public_opinion", [])))
     body_elements.extend(render_risks(report.get("risky_tweets", [])))
 
-    return {
+    card = {
         "msg_type": "interactive",
         "card": {
             "schema": "2.0",
@@ -342,6 +342,9 @@ def build_card(
             },
         },
     }
+    if full_report_url:
+        card["card"]["card_link"] = {"url": full_report_url}
+    return card
 
 
 def build_competitor_card(report: dict, lookback_hours: int = 24) -> dict:
