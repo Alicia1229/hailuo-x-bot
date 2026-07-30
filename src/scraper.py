@@ -44,6 +44,9 @@ class Tweet:
     retweets: int
     replies: int
     quotes: int
+    is_reply: bool = False
+    is_repost: bool = False
+    is_quote: bool = False
 
     def engagement(self) -> int:
         return self.likes + self.retweets + self.replies + self.quotes
@@ -67,6 +70,22 @@ def _parse_tweet(t) -> Tweet:
         retweets=getattr(t, "retweetCount", 0) or 0,
         replies=getattr(t, "replyCount", 0) or 0,
         quotes=getattr(t, "quoteCount", 0) or 0,
+        is_reply=getattr(t, "inReplyToTweetId", None) is not None,
+        is_repost=getattr(t, "retweetedTweet", None) is not None,
+        is_quote=(
+            getattr(t, "quotedTweet", None) is not None
+            or bool(getattr(t, "isQuoteStatus", False))
+        ),
+    )
+
+
+def _is_original_post(t) -> bool:
+    """Return True only for standalone posts, excluding replies, reposts, and quotes."""
+    return not (
+        getattr(t, "inReplyToTweetId", None) is not None
+        or getattr(t, "retweetedTweet", None) is not None
+        or getattr(t, "quotedTweet", None) is not None
+        or bool(getattr(t, "isQuoteStatus", False))
     )
 
 
@@ -91,7 +110,10 @@ async def fetch_for_query(
     since_ts = int(cutoff.timestamp())
     until_ts = int(end.timestamp())
     # 用括号把调用方的 query 包起来，避免 since_time/until_time 只 OR 进最后一个关键词
-    bounded = f"({query}) since_time:{since_ts} until_time:{until_ts}"
+    bounded = (
+        f"({query}) -filter:replies -filter:nativeretweets "
+        f"since_time:{since_ts} until_time:{until_ts}"
+    )
     log.info(
         "搜索 query=%r, 时间窗口=%s ~ %s UTC (server-side since_time=%s until_time=%s)",
         query, cutoff.isoformat(), end.isoformat(), since_ts, until_ts,
@@ -110,6 +132,8 @@ async def fetch_for_query(
             async for t in api.search(bounded, limit=max):
                 # X 偶尔会回退窗口外结果，Python 再做上下界兜底。
                 if not cutoff <= t.date < end:
+                    continue
+                if not _is_original_post(t):
                     continue
                 parsed = _parse_tweet(t)
                 previous = by_id.get(parsed.tweet_id)
