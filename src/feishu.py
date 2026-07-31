@@ -156,6 +156,7 @@ def _render_launch_analysis(report: dict, full_report_url: str | None) -> list[d
     sd = analysis.get("seedance") or {}
     problems = analysis.get("problems") or []
     negative = analysis.get("negative") or {}
+    topic_clusters = analysis.get("topic_clusters") or []
     summary = report.get("summary") or {}
     direct_counts = sd.get("direct_counts", {})
     stance_counts = sd.get("stance_counts", {})
@@ -172,8 +173,14 @@ def _render_launch_analysis(report: dict, full_report_url: str | None) -> list[d
         f"Hailuo 总 Views：{_fmt(summary.get('total_views', overview.get('hailuo_views', 0)))}",
         f"MiniMax H3 相关讨论：{overview.get('h3_news_posts', '暂无')} 条",
         f"Seedance 2.5 相关讨论：{overview.get('seedance_news_display_total', '暂无')} 条",
-        "H3 讨论量 / Seedance 讨论量：约 1.57 倍",
     ])
+    topic_lines = ["**话题聚类 Top 5**"]
+    for index, item in enumerate(topic_clusters[:5], 1):
+        topic_lines.append(
+            f"{index}. {_safe_md_text(item.get('topic', '其他讨论'))}："
+            f"{int(item.get('count', 0) or 0)} 条 · Views {_fmt(int(item.get('views', 0) or 0))}"
+        )
+    topics_block = "\n".join(topic_lines) if topic_clusters else "**话题聚类 Top 5**\n暂无"
     highlights = "\n".join([
         "**核心结论**",
         _safe_md_text(comparison),
@@ -186,9 +193,10 @@ def _render_launch_analysis(report: dict, full_report_url: str | None) -> list[d
             "content": (
                 "**一、舆情总结**\n"
                 f"{overview_block}\n\n"
+                f"{topics_block}\n\n"
                 f"{highlights}\n\n"
                 f"{report_link}\n"
-                "<font color='grey'>完整报告内含 Goodcase 分布、Views Top 5、Seedance 对比、词云、负面帖子和全部原创帖子清单。</font>"
+                "<font color='grey'>完整报告内含 Goodcase 分布、话题聚类、Views Top 5、Seedance 对比、词云、负面帖子和全部原创帖子清单。</font>"
             ),
         },
     }]
