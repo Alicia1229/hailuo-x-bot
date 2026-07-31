@@ -150,128 +150,48 @@ def _label(mapping: dict[str, str], key: object) -> str:
 
 
 def _render_launch_analysis(report: dict, full_report_url: str | None) -> list[dict]:
-    """Render the launch-specific report format when enrichment data is present."""
+    """Render a compact card and keep the detailed launch report on GitHub Pages."""
     analysis = report.get("launch_analysis") or {}
     overview = analysis.get("data_overview") or {}
-    goodcase = analysis.get("goodcase") or {}
     sd = analysis.get("seedance") or {}
     problems = analysis.get("problems") or []
     negative = analysis.get("negative") or {}
-    elements: list[dict] = []
-
-    def block(content: str) -> None:
-        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": content}})
-
-    def divider() -> None:
-        elements.append({"tag": "hr"})
-
-    block("**一、舆情总结**")
-    rows = [
-        "| 口径 | Posts | Views |",
-        "| --- | ---: | ---: |",
-        f"| Hailuo 原创抓取 | {overview.get('hailuo_posts', 0)} | {_fmt(overview.get('hailuo_views', 0))} |",
-        f"| X News · MiniMax H3 | {overview.get('h3_news_posts', '13.1K')} | 截至 13:00 快照 |",
-        f"| X News · Seedance 2.5 话题 1 | {overview.get('seedance_news_1', '6,170')} | 截至 13:00 快照 |",
-        f"| X News · Seedance 2.5 话题 2 | {overview.get('seedance_news_2', '2,169')} | 截至 13:00 快照 |",
-        f"| Seedance 截图显示合计* | {overview.get('seedance_news_display_total', '8,339')} | 不去重 |",
-    ]
-    block("**1. 数据概况**\n" + "\n".join(rows) + "\n<font color='grey'>*截图中的两个 Seedance News 话题可能存在重复帖子，合计仅作页面显示量比较；Hailuo 抓取为 37h 纯原创窗口。</font>")
-
-    scene_counts = goodcase.get("scene_counts", {})
-    type_counts = goodcase.get("post_type_counts", {})
-    feature_counts = goodcase.get("feature_counts", {})
-    scene_line = "、".join(
-        f"{_label(SCENE_LABELS, key)} {value}"
-        for key, value in list(scene_counts.items())[:6]
-    ) or "暂无"
-    type_line = "、".join(
-        f"{_label(POST_TYPE_LABELS, key)} {value}"
-        for key, value in list(type_counts.items())[:5]
-    ) or "暂无"
-    feature_line = "、".join(
-        f"{_label(FEATURE_LABELS, key)} {value}"
-        for key, value in list(feature_counts.items())[:8]
-    ) or "暂无"
-    block(
-        f"**2. Goodcase 分布（{goodcase.get('analyzed_unique_posts', 0)} 个可访问唯一帖子）**\n"
-        f"场景：{_safe_md_text(scene_line)}\n"
-        f"帖子类型：{_safe_md_text(type_line)}\n"
-        f"Feature：{_safe_md_text(feature_line)}\n"
-        f"表内 {goodcase.get('sheet_rows', 0)} 行，{len(goodcase.get('unavailable_rows', []))} 条链接目前不可访问。"
-    )
-
-    stance_counts = sd.get("stance_counts", {})
+    summary = report.get("summary") or {}
     direct_counts = sd.get("direct_counts", {})
-    points = sd.get("primary_point_counts", {})
-    stance_line = "、".join(
-        f"{_safe_md_text({'hailuo_better': 'Hailuo 更好', 'no_conclusion': '无明确结论', 'mixed': '各有优劣', 'seedance_better': 'Seedance 更好'}.get(key, key))} {value}"
-        for key, value in stance_counts.items()
-    ) or "暂无"
-    point_line = "、".join(
-        f"{_label(FEATURE_LABELS, key)} {value}"
-        for key, value in list(points.items())[:6]
-    ) or "暂无"
-    block(
-        f"**3. SD 对比分析**\n"
-        f"Seedance 共现 {sd.get('total', 0)} 条；真正横向比较 {direct_counts.get('direct', 0)} 条。\n"
-        f"立场：{stance_line}\n"
-        f"比较重点：{_safe_md_text(point_line)}\n"
-        "总体认知：H3 更便宜，在广告叙事、文字稳定性、提示词遵循和商业成片上更受认可；Seedance 在激烈动作、动态镜头和成熟度上仍有优势。"
+    stance_counts = sd.get("stance_counts", {})
+    hailuo_better = stance_counts.get("hailuo_better", 0)
+    seedance_better = stance_counts.get("seedance_better", 0)
+    report_link = f"[打开 GitHub 完整报告]({full_report_url})" if full_report_url else "完整报告链接待发布"
+    comparison = (
+        f"Seedance 横向比较 {direct_counts.get('direct', 0)} 条："
+        f"Hailuo 更好 {hailuo_better} 条，Seedance 更好 {seedance_better} 条。"
     )
-    block("**4. 我们的问题所在**\n" + "\n".join(f"- {_safe_md_text(item)}" for item in problems) if problems else "**4. 我们的问题所在**\n- 暂无")
-    divider()
-
-    block("**二、具体案例**")
-    top_cases = analysis.get("top_cases", [])[:5]
-    if top_cases:
-        lines = ["**Top case · Views Top 5**"]
-        for index, item in enumerate(top_cases, 1):
-            lines.append(
-                f"{index}. [{_safe_md_text(item.get('author', ''))}]({item.get('url', '')}) · "
-                f"👁 {_fmt(item.get('views', 0))} · {_safe_md_text(item.get('summary', ''))}"
-            )
-        block("\n".join(lines))
-    for scene, cases in list((goodcase.get("top_cases_by_scene") or {}).items())[:6]:
-        case = cases[0] if cases else {}
-        if case:
-            block(
-                f"**{_label(SCENE_LABELS, scene)}** · [{_safe_md_text(case.get('author', ''))}]({case.get('url', '')}) "
-                f"· 👁 {_fmt(case.get('views', 0))} · {_safe_md_text(case.get('summary', ''))}"
-            )
-    sd_cases = sd.get("representatives", {})
-    sd_lines = ["**SD 对比代表帖**"]
-    for key in ("hailuo_better", "mixed", "seedance_better"):
-        rows = sd_cases.get(key, [])
-        if rows:
-            row = rows[0]
-            sd_lines.append(
-                f"- {_safe_md_text({'hailuo_better': 'Hailuo 更好', 'mixed': '各有优劣', 'seedance_better': 'Seedance 更好'}.get(key, key))}："
-                f"[{_fmt(row.get('views', 0))} Views]({row.get('url', '')}) · {_safe_md_text(row.get('reason', ''))}"
-            )
-    block("\n".join(sd_lines))
-    divider()
-
-    terms = report.get("related_terms", [])[:18]
-    wordcloud = "　·　".join(
-        f"**{_safe_md_text(item.get('term', ''))}** ×{item.get('count', 0)}" if i < 6
-        else f"{_safe_md_text(item.get('term', ''))} ×{item.get('count', 0)}"
-        for i, item in enumerate(terms)
-    ) or "暂无"
-    block("**三、词云**\n" + wordcloud)
-    divider()
-
-    negative_url = analysis.get("negative_report_url")
-    negative_link = f"[查看全部 {negative.get('posts', 0)} 条负面帖子]({negative_url})" if negative_url else "负面清单链接待发布"
-    block(
-        f"**四、负面舆情**\n"
-        f"负面 {negative.get('posts', 0)} 条 · {_fmt(negative.get('views', 0))} Views · "
-        f"占总 Views {negative.get('views_share_pct', 0)}%\n"
-        f"{negative_link}\n"
-        f"{_safe_md_text(negative.get('summary', '整体传播影响较低，风险集中在产品体验和竞品比较。'))}"
-    )
-    divider()
-    elements.extend(render_all_tweets_link(report.get("summary", {}).get("total_tweets", 0), full_report_url))
-    return elements
+    overview_block = "\n".join([
+        "**数据概况**",
+        f"Hailuo 原创帖子：{summary.get('total_tweets', overview.get('hailuo_posts', 0))} 条",
+        f"Hailuo 总 Views：{_fmt(summary.get('total_views', overview.get('hailuo_views', 0)))}",
+        f"MiniMax H3 相关讨论：{overview.get('h3_news_posts', '暂无')} 条",
+        f"Seedance 2.5 相关讨论：{overview.get('seedance_news_display_total', '暂无')} 条",
+        "H3 讨论量 / Seedance 讨论量：约 1.57 倍",
+    ])
+    highlights = "\n".join([
+        "**核心结论**",
+        _safe_md_text(comparison),
+        _safe_md_text(negative.get("summary", "暂无负面舆情摘要。")),
+    ])
+    return [{
+        "tag": "div",
+        "text": {
+            "tag": "lark_md",
+            "content": (
+                "**一、舆情总结**\n"
+                f"{overview_block}\n\n"
+                f"{highlights}\n\n"
+                f"{report_link}\n"
+                "<font color='grey'>完整报告内含 Goodcase 分布、Views Top 5、Seedance 对比、词云、负面帖子和全部原创帖子清单。</font>"
+            ),
+        },
+    }]
 
 
 def render_top_tweets(tweets: list[dict], cap: int = 5) -> list[dict]:
