@@ -314,13 +314,13 @@ def _render_launch_html(report: dict, tweets_file: str, negative_file: str) -> s
         sections.append(f"<section><h2>{escape(title)}</h2>{body}</section>")
 
     table = (
-        '<table><thead><tr><th>口径</th><th>Posts</th><th>Views</th></tr></thead><tbody>'
-        f'<tr><td>Hailuo 原创抓取</td><td>{overview.get("hailuo_posts", 0)}</td><td>{_fmt(overview.get("hailuo_views", 0))}</td></tr>'
-        f'<tr><td>X News · MiniMax H3</td><td>{escape(str(overview.get("h3_news_posts", "13.1K")))}</td><td>截至 13:00 快照</td></tr>'
-        f'<tr><td>X News · Seedance 2.5 话题 1</td><td>{escape(str(overview.get("seedance_news_1", "6,170")))}</td><td>截至 13:00 快照</td></tr>'
-        f'<tr><td>X News · Seedance 2.5 话题 2</td><td>{escape(str(overview.get("seedance_news_2", "2,169")))}</td><td>截至 13:00 快照</td></tr>'
-        f'<tr><td>Seedance 截图显示合计*</td><td>{escape(str(overview.get("seedance_news_display_total", "8,339")))}</td><td>不去重</td></tr>'
-        '</tbody></table><p class="muted">*两个 Seedance News 话题可能重复；Hailuo 抓取为 37h 纯原创窗口。</p>'
+        '<table><thead><tr><th>指标</th><th>数据</th></tr></thead><tbody>'
+        f'<tr><td>Hailuo 原创帖子</td><td>{overview.get("hailuo_posts", 0)} 条</td></tr>'
+        f'<tr><td>Hailuo 总 Views</td><td>{round(int(overview.get("hailuo_views", 0) or 0) / 10000)} 万</td></tr>'
+        f'<tr><td>MiniMax H3 相关讨论</td><td>{escape(str(overview.get("h3_news_posts", "13.1K")))} 条</td></tr>'
+        f'<tr><td>Seedance 2.5 相关讨论</td><td>{escape(str(overview.get("seedance_news_display_total", "8,339")))} 条</td></tr>'
+        '<tr><td>H3 讨论量 / Seedance 讨论量</td><td>约 1.57 倍</td></tr>'
+        '</tbody></table>'
     )
     section("一、舆情总结 · 1. 数据概况", table)
 
