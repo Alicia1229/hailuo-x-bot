@@ -334,11 +334,9 @@ def _render_launch_html(report: dict, tweets_file: str, negative_file: str) -> s
         f"{_label(FEATURE_LABELS, k)} {v}" for k, v in list((goodcase.get("feature_counts") or {}).items())[:12]
     ) or "暂无"
     section(
-        "一、舆情总结 · 2. Goodcase 分布情况",
-        f'<p>表内 {goodcase.get("sheet_rows", 0)} 行，{goodcase.get("analyzed_unique_posts", 0)} 个可访问唯一帖子。</p>'
+        "一、舆情总结 · 2. Goodcase 分布（主观收集）",
         f'<p><strong>场景：</strong>{escape(scene)}</p><p><strong>帖子类型：</strong>{escape(types)}</p>'
-        f'<p><strong>Feature：</strong>{escape(features)}</p>'
-        f'<p class="muted">{len(goodcase.get("unavailable_rows", []))} 个链接当前不可访问。</p>',
+        f'<p><strong>Feature：</strong>{escape(features)}</p>',
     )
 
     stance = "、".join(
@@ -357,12 +355,16 @@ def _render_launch_html(report: dict, tweets_file: str, negative_file: str) -> s
     problems = analysis.get("problems") or []
     section("一、舆情总结 · 4. 我们的问题所在", "<ul>" + "".join(f"<li>{escape(str(item))}</li>" for item in problems) + "</ul>")
 
-    top_cases = analysis.get("top_cases") or []
+    ranked_tweets = sorted(
+        report.get("all_tweets") or report.get("top_tweets") or [],
+        key=lambda item: int(item.get("views", 0) or 0),
+        reverse=True,
+    )
     top_html = "".join(
-        f'<div class="tweet"><strong>{i}.</strong> <a href="{escape(item.get("url", ""))}" target="_blank" rel="noopener">{escape(item.get("author", ""))}</a> · Views <strong>{_fmt(item.get("views", 0))}</strong><br>{escape(item.get("summary", ""))}<br><a href="{escape(item.get("url", ""))}" target="_blank" rel="noopener">打开帖子</a></div>'
-        for i, item in enumerate(top_cases[:5], 1)
+        _tweet_preview(item, i)
+        for i, item in enumerate(ranked_tweets[:5], 1)
     ) or '<div class="muted">暂无</div>'
-    case_blocks = [top_html]
+    case_blocks = [f"<h3>Views Top 5</h3>{top_html}", "<h3>Goodcase 场景代表帖</h3>"]
     for scene_key, cases in list((goodcase.get("top_cases_by_scene") or {}).items()):
         if not cases:
             continue
@@ -371,6 +373,7 @@ def _render_launch_html(report: dict, tweets_file: str, negative_file: str) -> s
             f'<div class="topic"><strong>{escape(_label(SCENE_LABELS, scene_key))}</strong> · '
             f'<a href="{escape(item.get("url", ""))}" target="_blank" rel="noopener">{escape(item.get("author", ""))}</a> · Views {_fmt(item.get("views", 0))}<br>{escape(item.get("summary", ""))}</div>'
         )
+    case_blocks.append("<h3>Seedance 对比代表帖</h3>")
     reps = sd.get("representatives") or {}
     for key in ("hailuo_better", "mixed", "seedance_better"):
         if reps.get(key):
