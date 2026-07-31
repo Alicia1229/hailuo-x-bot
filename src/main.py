@@ -257,6 +257,7 @@ def _publish_report(report_file: Path, report: dict) -> None:
     path_args = [
         f"docs/reports/{report_date}.html",
         f"docs/reports/{report_date}-tweets.html",
+        f"docs/reports/{report_date}-negative.html",
         "docs/reports/manifest.json",
     ]
     published = False
