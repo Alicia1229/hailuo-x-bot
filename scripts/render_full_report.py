@@ -319,41 +319,58 @@ def _render_launch_html(report: dict, tweets_file: str, negative_file: str) -> s
         f'<tr><td>Hailuo 总 Views</td><td>{round(int(overview.get("hailuo_views", 0) or 0) / 10000)} 万</td></tr>'
         f'<tr><td>MiniMax H3 相关讨论</td><td>{escape(str(overview.get("h3_news_posts", "13.1K")))} 条</td></tr>'
         f'<tr><td>Seedance 2.5 相关讨论</td><td>{escape(str(overview.get("seedance_news_display_total", "8,339")))} 条</td></tr>'
-        '<tr><td>H3 讨论量 / Seedance 讨论量</td><td>约 1.57 倍</td></tr>'
         '</tbody></table>'
     )
     section("一、舆情总结 · 1. 数据概况", table)
 
     scene = "、".join(
-        f"{_label(SCENE_LABELS, k)} {v}" for k, v in list((goodcase.get("scene_counts") or {}).items())[:10]
-    ) or "暂无"
-    types = "、".join(
-        f"{_label(POST_TYPE_LABELS, k)} {v}" for k, v in list((goodcase.get("post_type_counts") or {}).items())[:10]
+        _label(SCENE_LABELS, k) for k, _ in list((goodcase.get("scene_counts") or {}).items())[:5]
     ) or "暂无"
     features = "、".join(
-        f"{_label(FEATURE_LABELS, k)} {v}" for k, v in list((goodcase.get("feature_counts") or {}).items())[:12]
+        _label(FEATURE_LABELS, k) for k, _ in list((goodcase.get("feature_counts") or {}).items())[:5]
     ) or "暂无"
     section(
         "一、舆情总结 · 2. Goodcase 分布（主观收集）",
-        f'<p><strong>场景：</strong>{escape(scene)}</p><p><strong>帖子类型：</strong>{escape(types)}</p>'
-        f'<p><strong>Feature：</strong>{escape(features)}</p>',
+        f'<p><strong>场景分布：</strong>{escape(scene)}</p>'
+        f'<p><strong>Feature 分布：</strong>{escape(features)}</p>',
     )
+
+    topic_rows = []
+    for index, item in enumerate((analysis.get("topic_clusters") or [])[:5], 1):
+        representatives = item.get("representatives") or []
+        representative = representatives[0] if representatives else {}
+        link = (
+            f'<a href="{escape(str(representative.get("url", "")))}" '
+            'target="_blank" rel="noopener">代表帖</a>'
+            if representative.get("url") else "-"
+        )
+        topic_rows.append(
+            f'<tr><td>{index}. {escape(str(item.get("topic", "其他讨论")))}</td>'
+            f'<td>{int(item.get("count", 0) or 0)}</td>'
+            f'<td>{_fmt(item.get("views", 0))}</td><td>{link}</td></tr>'
+        )
+    topic_table = (
+        '<table><thead><tr><th>话题</th><th>帖子数</th><th>Views</th><th>案例</th></tr></thead>'
+        f'<tbody>{"".join(topic_rows)}</tbody></table>'
+        if topic_rows else '<div class="muted">暂无</div>'
+    )
+    section("一、舆情总结 · 3. 话题聚类", topic_table)
 
     stance = "、".join(
         f"{escape({'hailuo_better': 'Hailuo 更好', 'no_conclusion': '无明确结论', 'mixed': '各有优劣', 'seedance_better': 'Seedance 更好'}.get(k, k))} {v}"
         for k, v in (sd.get("stance_counts") or {}).items()
     ) or "暂无"
     points = "、".join(
-        f"{_label(FEATURE_LABELS, k)} {v}" for k, v in list((sd.get("primary_point_counts") or {}).items())[:12]
+        f"{_label(FEATURE_LABELS, k)} {v}" for k, v in list((sd.get("primary_point_counts") or {}).items())[:5]
     ) or "暂无"
     section(
-        "一、舆情总结 · 3. SD 对比分析",
+        "一、舆情总结 · 4. SD 对比分析",
         f'<p>Seedance 共现 {sd.get("total", 0)} 条，其中实际横向比较 {sd.get("direct_counts", {}).get("direct", 0)} 条。</p>'
         f'<p><strong>立场：</strong>{stance}</p><p><strong>比较维度：</strong>{escape(points)}</p>'
         '<p>总体认知：H3 更便宜，在广告叙事、文字稳定性、提示词遵循和商业成片上更受认可；Seedance 在激烈动作、动态镜头和成熟度上仍有优势。</p>',
     )
     problems = analysis.get("problems") or []
-    section("一、舆情总结 · 4. 我们的问题所在", "<ul>" + "".join(f"<li>{escape(str(item))}</li>" for item in problems) + "</ul>")
+    section("一、舆情总结 · 5. 我们的问题所在", "<ul>" + "".join(f"<li>{escape(str(item))}</li>" for item in problems) + "</ul>")
 
     ranked_tweets = sorted(
         report.get("all_tweets") or report.get("top_tweets") or [],
@@ -364,15 +381,7 @@ def _render_launch_html(report: dict, tweets_file: str, negative_file: str) -> s
         _tweet_preview(item, i)
         for i, item in enumerate(ranked_tweets[:5], 1)
     ) or '<div class="muted">暂无</div>'
-    case_blocks = [f"<h3>Views Top 5</h3>{top_html}", "<h3>Goodcase 场景代表帖</h3>"]
-    for scene_key, cases in list((goodcase.get("top_cases_by_scene") or {}).items()):
-        if not cases:
-            continue
-        item = cases[0]
-        case_blocks.append(
-            f'<div class="topic"><strong>{escape(_label(SCENE_LABELS, scene_key))}</strong> · '
-            f'<a href="{escape(item.get("url", ""))}" target="_blank" rel="noopener">{escape(item.get("author", ""))}</a> · Views {_fmt(item.get("views", 0))}<br>{escape(item.get("summary", ""))}</div>'
-        )
+    case_blocks = [f"<h3>Views Top 5</h3>{top_html}"]
     case_blocks.append("<h3>Seedance 对比代表帖</h3>")
     reps = sd.get("representatives") or {}
     for key in ("hailuo_better", "mixed", "seedance_better"):
