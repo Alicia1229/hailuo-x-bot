@@ -64,16 +64,8 @@ REPORT_TEMPLATE = """<!doctype html>
     <div class="metric"><div class="label">总 Engagement</div><div class="value">{total_engagement:,}</div></div>
     <div class="metric"><div class="label">作者数</div><div class="value">{authors}</div></div>
   </div>
-  <section>
-    <h2>全部帖子</h2>
-    <div class="muted">完整清单支持搜索、排序和筛选。</div>
-    <a class="button" href="{tweets_file}">查看全部 {total_tweets} 条推文</a>
-  </section>
-  <section><h2>Views Top 5</h2>{top_tweets_html}</section>
-  <section><h2>舆情正负面占比</h2>{sentiment_html}</section>
-  <section><h2>热议话题 Top 3</h2>{topics_html}</section>
-  <section><h2>潜在风险监控</h2>{risks_html}</section>
-  <section><h2>Related 高频词</h2><div class="terms">{terms_html}</div></section>
+  {launch_html}
+  {legacy_html}
 </main>
 </body>
 </html>
@@ -281,6 +273,130 @@ def _render_terms(report: dict) -> str:
     )
 
 
+SCENE_LABELS = {
+    "commercial_ad": "商业广告", "cinematic_trailer": "电影预告",
+    "game_ui_mg": "游戏 / UI / MG", "music_dance_mv": "音乐 / 舞蹈 / MV",
+    "anime_illustration": "动漫 / 手绘", "dialogue_performance": "对白 / 表演",
+    "action_vfx": "动作 / 特效", "fantasy_story": "奇幻叙事",
+    "product_ui_demo": "产品 / UI 演示", "other": "其他作品",
+}
+POST_TYPE_LABELS = {
+    "product_test_review": "产品测试 / 评测", "work_showcase": "作品展示",
+    "head_to_head_comparison": "横向对比", "tutorial_workflow": "教程 / 工作流",
+    "news_announcement": "新闻 / 发布", "partner_promotion": "合作推广", "other": "其他",
+}
+FEATURE_LABELS = {
+    "price": "价格 / 性价比", "visual_quality": "画面质量", "text_stability": "文字稳定性",
+    "multimodal_audio": "多模态 / 音频", "availability_release": "发布 / 开放",
+    "visual_style_quality": "画面风格 / 质量", "motion_camera": "运镜 / 动态",
+    "omni_reference": "Omni Reference", "prompt_adherence": "提示词遵循",
+    "character_consistency": "角色一致性", "transitions_narrative": "转场 / 叙事",
+    "action_performance": "动作表现", "resolution_duration": "2K / 时长",
+    "native_audio_lipsync": "原生音频 / 口型", "text_rendering": "文字生成",
+    "price_efficiency": "价格 / 性价比", "other": "其他",
+}
+
+
+def _label(mapping: dict[str, str], key: object) -> str:
+    value = str(key or "other")
+    return mapping.get(value, value)
+
+
+def _render_launch_html(report: dict, tweets_file: str, negative_file: str) -> str:
+    analysis = report.get("launch_analysis") or {}
+    overview = analysis.get("data_overview") or {}
+    goodcase = analysis.get("goodcase") or {}
+    sd = analysis.get("seedance") or {}
+    negative = analysis.get("negative") or {}
+    sections = []
+
+    def section(title: str, body: str) -> None:
+        sections.append(f"<section><h2>{escape(title)}</h2>{body}</section>")
+
+    table = (
+        '<table><thead><tr><th>口径</th><th>Posts</th><th>Views</th></tr></thead><tbody>'
+        f'<tr><td>Hailuo 原创抓取</td><td>{overview.get("hailuo_posts", 0)}</td><td>{_fmt(overview.get("hailuo_views", 0))}</td></tr>'
+        f'<tr><td>X News · MiniMax H3</td><td>{escape(str(overview.get("h3_news_posts", "13.1K")))}</td><td>截至 13:00 快照</td></tr>'
+        f'<tr><td>X News · Seedance 2.5 话题 1</td><td>{escape(str(overview.get("seedance_news_1", "6,170")))}</td><td>截至 13:00 快照</td></tr>'
+        f'<tr><td>X News · Seedance 2.5 话题 2</td><td>{escape(str(overview.get("seedance_news_2", "2,169")))}</td><td>截至 13:00 快照</td></tr>'
+        f'<tr><td>Seedance 截图显示合计*</td><td>{escape(str(overview.get("seedance_news_display_total", "8,339")))}</td><td>不去重</td></tr>'
+        '</tbody></table><p class="muted">*两个 Seedance News 话题可能重复；Hailuo 抓取为 37h 纯原创窗口。</p>'
+    )
+    section("一、舆情总结 · 1. 数据概况", table)
+
+    scene = "、".join(
+        f"{_label(SCENE_LABELS, k)} {v}" for k, v in list((goodcase.get("scene_counts") or {}).items())[:10]
+    ) or "暂无"
+    types = "、".join(
+        f"{_label(POST_TYPE_LABELS, k)} {v}" for k, v in list((goodcase.get("post_type_counts") or {}).items())[:10]
+    ) or "暂无"
+    features = "、".join(
+        f"{_label(FEATURE_LABELS, k)} {v}" for k, v in list((goodcase.get("feature_counts") or {}).items())[:12]
+    ) or "暂无"
+    section(
+        "一、舆情总结 · 2. Goodcase 分布情况",
+        f'<p>表内 {goodcase.get("sheet_rows", 0)} 行，{goodcase.get("analyzed_unique_posts", 0)} 个可访问唯一帖子。</p>'
+        f'<p><strong>场景：</strong>{escape(scene)}</p><p><strong>帖子类型：</strong>{escape(types)}</p>'
+        f'<p><strong>Feature：</strong>{escape(features)}</p>'
+        f'<p class="muted">{len(goodcase.get("unavailable_rows", []))} 个链接当前不可访问。</p>',
+    )
+
+    stance = "、".join(
+        f"{escape({'hailuo_better': 'Hailuo 更好', 'no_conclusion': '无明确结论', 'mixed': '各有优劣', 'seedance_better': 'Seedance 更好'}.get(k, k))} {v}"
+        for k, v in (sd.get("stance_counts") or {}).items()
+    ) or "暂无"
+    points = "、".join(
+        f"{_label(FEATURE_LABELS, k)} {v}" for k, v in list((sd.get("primary_point_counts") or {}).items())[:12]
+    ) or "暂无"
+    section(
+        "一、舆情总结 · 3. SD 对比分析",
+        f'<p>Seedance 共现 {sd.get("total", 0)} 条，其中实际横向比较 {sd.get("direct_counts", {}).get("direct", 0)} 条。</p>'
+        f'<p><strong>立场：</strong>{stance}</p><p><strong>比较维度：</strong>{escape(points)}</p>'
+        '<p>总体认知：H3 更便宜，在广告叙事、文字稳定性、提示词遵循和商业成片上更受认可；Seedance 在激烈动作、动态镜头和成熟度上仍有优势。</p>',
+    )
+    problems = analysis.get("problems") or []
+    section("一、舆情总结 · 4. 我们的问题所在", "<ul>" + "".join(f"<li>{escape(str(item))}</li>" for item in problems) + "</ul>")
+
+    top_cases = analysis.get("top_cases") or []
+    top_html = "".join(
+        f'<div class="tweet"><strong>{i}.</strong> <a href="{escape(item.get("url", ""))}" target="_blank" rel="noopener">{escape(item.get("author", ""))}</a> · Views <strong>{_fmt(item.get("views", 0))}</strong><br>{escape(item.get("summary", ""))}<br><a href="{escape(item.get("url", ""))}" target="_blank" rel="noopener">打开帖子</a></div>'
+        for i, item in enumerate(top_cases[:5], 1)
+    ) or '<div class="muted">暂无</div>'
+    case_blocks = [top_html]
+    for scene_key, cases in list((goodcase.get("top_cases_by_scene") or {}).items()):
+        if not cases:
+            continue
+        item = cases[0]
+        case_blocks.append(
+            f'<div class="topic"><strong>{escape(_label(SCENE_LABELS, scene_key))}</strong> · '
+            f'<a href="{escape(item.get("url", ""))}" target="_blank" rel="noopener">{escape(item.get("author", ""))}</a> · Views {_fmt(item.get("views", 0))}<br>{escape(item.get("summary", ""))}</div>'
+        )
+    reps = sd.get("representatives") or {}
+    for key in ("hailuo_better", "mixed", "seedance_better"):
+        if reps.get(key):
+            item = reps[key][0]
+            case_blocks.append(
+                f'<div class="topic"><strong>SD：{escape({"hailuo_better": "Hailuo 更好", "mixed": "各有优劣", "seedance_better": "Seedance 更好"}.get(key, key))}</strong> · '
+                f'<a href="{escape(item.get("url", ""))}" target="_blank" rel="noopener">{_fmt(item.get("views", 0))} Views 代表帖</a><br>{escape(item.get("reason", ""))}</div>'
+            )
+    section("二、具体案例", "".join(case_blocks))
+
+    terms = report.get("related_terms", [])[:20]
+    terms_html = " · ".join(f'<strong>{escape(str(item.get("term", "")))}</strong> ×{item.get("count", 0)}' for item in terms) or "暂无"
+    section("三、词云", f'<div class="terms">{terms_html}</div>')
+
+    negative_url = negative_file
+    negative_html = (
+        f'<p>负面 {negative.get("posts", 0)} 条 · Views {_fmt(negative.get("views", 0))} · '
+        f'占总 Views {negative.get("views_share_pct", 0)}%</p>'
+        f'<p><a class="button" href="{escape(negative_url)}">查看全部 {negative.get("posts", 0)} 条负面帖子</a></p>'
+        f'<p>{escape(negative.get("summary", "整体传播影响较低，风险集中在产品体验和竞品比较。"))}</p>'
+    )
+    section("四、负面舆情", negative_html)
+    section("完整帖子清单", f'<p class="muted">全部 {report.get("summary", {}).get("total_tweets", 0)} 条原创帖子支持搜索、排序和筛选。</p><a class="button" href="{escape(tweets_file)}">查看全部帖子</a>')
+    return "".join(sections)
+
+
 def render_tweet_row(t: dict) -> str:
     """输出一行 HTML 表格行。"""
     text = escape(t.get("text", ""))
@@ -349,6 +465,17 @@ def main():
     window_end = meta.get("window_end", "")
     generated_at = meta.get("generated_at", fname_stem)
     tweets_file = f"{date_str}-tweets.html"
+    negative_file = f"{date_str}-negative.html"
+    launch_html = _render_launch_html(report, tweets_file, negative_file) if report.get("launch_analysis") else ""
+    legacy_html = "" if launch_html else (
+        f'<section><h2>全部帖子</h2><div class="muted">完整清单支持搜索、排序和筛选。</div>'
+        f'<a class="button" href="{tweets_file}">查看全部 {len(tweets)} 条推文</a></section>'
+        f'<section><h2>Views Top 5</h2>{"".join(_tweet_preview(tweet, index) for index, tweet in enumerate(report.get("top_tweets", [])[:5], 1)) or "<div class=\"muted\">暂无数据</div>"}</section>'
+        f'<section><h2>舆情正负面占比</h2>{_render_sentiment(report)}</section>'
+        f'<section><h2>热议话题 Top 3</h2>{_render_topics(report)}</section>'
+        f'<section><h2>潜在风险监控</h2>{_render_risks(report)}</section>'
+        f'<section><h2>Related 高频词</h2><div class="terms">{_render_terms(report)}</div></section>'
+    )
     report_html = REPORT_TEMPLATE.format(
         title=f"Hailuo X 舆情报告 · {pretty_date}",
         meta=escape(
@@ -361,6 +488,8 @@ def main():
         total_engagement=summary.get("total_engagement", 0),
         authors=summary.get("authors", 0),
         tweets_file=tweets_file,
+        launch_html=launch_html,
+        legacy_html=legacy_html,
         top_tweets_html="".join(
             _tweet_preview(tweet, index)
             for index, tweet in enumerate(report.get("top_tweets", [])[:5], 1)
@@ -389,8 +518,29 @@ def main():
     tweets_path = DOCS / tweets_file
     out_path.write_text(report_html, encoding="utf-8")
     tweets_path.write_text(table_html, encoding="utf-8")
+    negative_tweets = report.get("negative_tweets", [])
+    negative_rows = "\n".join(render_tweet_row(tweet) for tweet in negative_tweets)
+    if not negative_rows:
+        negative_rows = '    <tr><td class="empty" colspan="9">本期没有负面帖子</td></tr>'
+    negative_html = TWEETS_TEMPLATE.format(
+        title=f"Hailuo X 负面帖子 · {pretty_date}",
+        meta=escape(
+            f"固定窗口 {window_start} ~ {window_end} · 生成时间 {generated_at} · "
+            f"数据源: X 搜索 + AI 判定 · 报告 ID: {report_id}"
+        ),
+        quality_html=quality_html,
+        total_tweets=len(negative_tweets),
+        total_views=sum(int(tweet.get("views", 0) or 0) for tweet in negative_tweets),
+        total_engagement=sum(sum(int(tweet.get(key, 0) or 0) for key in ("likes", "retweets", "replies", "quotes")) for tweet in negative_tweets),
+        authors=len({tweet.get("author") for tweet in negative_tweets}),
+        window_hours=summary.get("window_hours", 24),
+        rows=negative_rows,
+    )
+    negative_path = DOCS / negative_file
+    negative_path.write_text(negative_html, encoding="utf-8")
     print(f"✅ 写出 {out_path}  (完整报告)")
     print(f"✅ 写出 {tweets_path}  ({len(tweets)} 条)")
+    print(f"✅ 写出 {negative_path}  ({len(negative_tweets)} 条负面帖子)")
 
     # 同步更新 manifest.json(index.html 用 JS 读)
     _update_manifest(DOCS)
