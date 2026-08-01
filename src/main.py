@@ -33,6 +33,8 @@ H3_COOCCURRENCE_PAIRS = (
     ("Hailuo", "H3"),
 )
 
+DEFAULT_TOP_TWEET_EXCLUDED_AUTHORS = "MiniMax_AI,Hailuo_AI,TopviewAIhq"
+
 
 def _configure_logging() -> None:
     log_dir = Path("logs")
@@ -82,6 +84,14 @@ def _config() -> dict:
         "openai_api_key": os.environ.get("OPENAI_API_KEY") or None,
         "openai_base_url": os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1",
         "risk_model": os.environ.get("RISK_MODEL", "gpt-5-mini"),
+        "top_tweet_excluded_authors": {
+            author.strip().lstrip("@").casefold()
+            for author in os.environ.get(
+                "TOP_TWEET_EXCLUDED_AUTHORS",
+                DEFAULT_TOP_TWEET_EXCLUDED_AUTHORS,
+            ).split(",")
+            if author.strip()
+        },
     }
 
 
@@ -119,6 +129,15 @@ def _build_hailuo_queries(keywords: list[str]) -> list[str]:
         for left, right in H3_COOCCURRENCE_PAIRS
     )
     return list(dict.fromkeys(clauses))
+
+
+def _select_top_tweets(tweets: list, excluded_authors: set[str], cap: int = 5) -> list:
+    """Return the highest-view creator posts after excluding configured official accounts."""
+    return [
+        tweet
+        for tweet in tweets
+        if str(tweet.author).lstrip("@").casefold() not in excluded_authors
+    ][:cap]
 
 
 def _fetch_hailuo_results(
@@ -518,7 +537,13 @@ def run_once(
             },
             "data_quality": data_quality,
             "summary": analyzer.compute_summary(hailuo_tweets, window_hours),
-            "top_tweets": [tweet.to_dict() for tweet in hailuo_tweets[:5]],
+            "top_tweets": [
+                tweet.to_dict()
+                for tweet in _select_top_tweets(
+                    hailuo_tweets,
+                    cfg["top_tweet_excluded_authors"],
+                )
+            ],
             "all_tweets": [tweet.to_dict() for tweet in hailuo_tweets],
             "competitor_table": [],
             "related_terms": analyzer.compute_related_terms(

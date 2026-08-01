@@ -372,11 +372,11 @@ def _render_launch_html(report: dict, tweets_file: str, negative_file: str) -> s
     problems = analysis.get("problems") or []
     section("一、舆情总结 · 5. 我们的问题所在", "<ul>" + "".join(f"<li>{escape(str(item))}</li>" for item in problems) + "</ul>")
 
-    ranked_tweets = sorted(
-        report.get("all_tweets") or report.get("top_tweets") or [],
+    ranked_tweets = report.get("top_tweets") or sorted(
+        report.get("all_tweets") or [],
         key=lambda item: int(item.get("views", 0) or 0),
         reverse=True,
-    )
+    )[:5]
     top_html = "".join(
         _tweet_preview(item, i)
         for i, item in enumerate(ranked_tweets[:5], 1)
