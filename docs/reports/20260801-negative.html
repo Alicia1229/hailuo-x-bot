@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Hailuo X 负面帖子 · 2026-08-01</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  * { box-sizing: border-box; }
+  body { font: 14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+         margin: 0; padding: 24px; background: #f6f8fa; color: #1f2328; }
+  h1 { font-size: 20px; margin: 0 0 8px; }
+  .meta { color: #656d76; margin-bottom: 16px; font-size: 12px; }
+  .summary { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
+  .card { background: #fff; border: 1px solid #d0d7de; border-radius: 6px; padding: 12px 16px; min-width: 120px; }
+  .card .label { color: #656d76; font-size: 11px; }
+  .card .value { font-size: 18px; font-weight: 600; margin-top: 4px; }
+  .toolbar { background: #fff; border: 1px solid #d0d7de; border-radius: 6px; padding: 12px;
+             margin-bottom: 12px; display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  .toolbar input, .toolbar select { font: inherit; padding: 6px 10px; border: 1px solid #d0d7de;
+                                       border-radius: 6px; background: #fff; }
+  .toolbar input { width: 240px; }
+  table { width: 100%; border-collapse: collapse; background: #fff;
+           border: 1px solid #d0d7de; border-radius: 6px; overflow: hidden; }
+  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #eaeef2; vertical-align: top; }
+  th { background: #f6f8fa; font-weight: 600; cursor: pointer; user-select: none; position: sticky; top: 0; }
+  th:hover { background: #eaeef2; }
+  tr:last-child td { border-bottom: none; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .views { font-weight: 600; color: #0969da; }
+  .author a { color: #0969da; text-decoration: none; }
+  .author a:hover { text-decoration: underline; }
+  .text { max-width: 480px; }
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 11px;
+            background: #ddf4ff; color: #0969da; }
+  .warning { background: #fff8c5; border: 1px solid #d4a72c; border-radius: 6px;
+              padding: 10px 12px; margin-bottom: 16px; color: #633c01; }
+  .empty { text-align: center; padding: 40px; color: #656d76; }
+  .row-hidden { display: none; }
+</style>
+</head>
+<body>
+<h1>📊 Hailuo X 负面帖子 · 2026-08-01</h1>
+<div class="meta">固定窗口 2026-08-01T00:00:00+08:00 ~ 2026-08-02T00:00:00+08:00 · 生成时间 2026-08-02T01:38:32.596313+08:00 · 数据源: X 搜索 + AI 判定 · 报告 ID: report_20260801_20260802T013832</div>
+
+
+<div class="summary">
+  <div class="card"><div class="label">推文数</div><div class="value">0</div></div>
+  <div class="card"><div class="label">总 Views</div><div class="value">0</div></div>
+  <div class="card"><div class="label">总 Engagement</div><div class="value">0</div></div>
+  <div class="card"><div class="label">作者数</div><div class="value">0</div></div>
+  <div class="card"><div class="label">窗口</div><div class="value">过去 24h</div></div>
+</div>
+
+<div class="toolbar">
+  <input type="search" id="q" placeholder="搜索作者 / 推文内容…">
+  <label><input type="checkbox" id="hideLow"> 隐藏 views &lt; 50</label>
+  <span style="color:#656d76;font-size:12px">点击列头排序</span>
+</div>
+
+<table id="t">
+  <thead><tr>
+    <th data-k="views" class="num">Views</th>
+    <th data-k="time">时间 (UTC)</th>
+    <th data-k="author">作者</th>
+    <th data-k="text">推文</th>
+    <th data-k="likes" class="num">❤️</th>
+    <th data-k="retweets" class="num">🔁</th>
+    <th data-k="replies" class="num">💬</th>
+    <th data-k="quotes" class="num">🔁引</th>
+    <th></th>
+  </tr></thead>
+  <tbody>
+    <tr><td class="empty" colspan="9">本期没有负面帖子</td></tr>
+  </tbody>
+</table>
+
+<script>
+const tbody = document.querySelector('#t tbody');
+const q = document.getElementById('q');
+const hideLow = document.getElementById('hideLow');
+
+function applyFilter() {
+  const term = q.value.toLowerCase();
+  const low = hideLow.checked;
+  for (const tr of tbody.querySelectorAll('tr')) {
+    const match = !term || tr.dataset.search.includes(term);
+    const v = parseInt(tr.dataset.views || '0', 10);
+    const lowOk = !low || v >= 50;
+    tr.classList.toggle('row-hidden', !(match && lowOk));
+  }
+}
+q.addEventListener('input', applyFilter);
+hideLow.addEventListener('change', applyFilter);
+
+// 列头排序
+let sortKey = 'views', sortAsc = false;
+for (const th of document.querySelectorAll('th[data-k]')) {
+  th.addEventListener('click', () => {
+    const k = th.dataset.k;
+    if (k === sortKey) sortAsc = !sortAsc; else { sortKey = k; sortAsc = false; }
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    rows.sort((a, b) => {
+      const av = a.dataset[k] || '', bv = b.dataset[k] || '';
+      const an = parseFloat(av), bn = parseFloat(bv);
+      if (!isNaN(an) && !isNaN(bn)) return sortAsc ? an - bn : bn - an;
+      return sortAsc ? av.localeCompare(bv) : bv.localeCompare(av);
+    });
+    tbody.append(...rows);
+  });
+}
+</script>
+</body>
+</html>
